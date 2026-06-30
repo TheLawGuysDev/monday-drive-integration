@@ -10,22 +10,85 @@ function mondayHeaders() {
     };
 }
 
+function addFileToMap(filesByKey, { assetId, name, url }) {
+    if (!name || !url) return;
+    const key = assetId ? String(assetId) : `${name}::${url}`;
+    if (!filesByKey.has(key)) {
+        filesByKey.set(key, { name, url, assetId: assetId ? String(assetId) : null });
+    }
+}
+
 /**
- * Fetches item name and all associated assets from Monday.
+ * Merges item.assets with files from all File columns (deduped by asset id).
+ */
+function collectItemFiles(item) {
+    const filesByKey = new Map();
+
+    for (const asset of item.assets || []) {
+        addFileToMap(filesByKey, {
+            assetId: asset.id,
+            name: asset.name,
+            url: asset.public_url,
+        });
+    }
+
+    for (const columnValue of item.column_values || []) {
+        for (const file of columnValue.files || []) {
+            if (file.asset_id == null) continue;
+            const url = file.asset?.public_url || file.asset?.url;
+            addFileToMap(filesByKey, {
+                assetId: file.asset_id,
+                name: file.name,
+                url,
+            });
+        }
+    }
+
+    return [...filesByKey.values()];
+}
+
+/**
+ * Fetches item name and all files (item assets + every File column).
  */
 async function getMondayItemData(itemId) {
     const query = `query {
         items (ids: [${itemId}]) {
             name
             assets {
+                id
                 name
                 public_url
+            }
+            column_values {
+                ... on FileValue {
+                    files {
+                        ... on FileAssetValue {
+                            asset_id
+                            name
+                            asset {
+                                public_url
+                                url
+                            }
+                        }
+                    }
+                }
             }
         }
     }`;
 
     const response = await axios.post(MONDAY_API_URL, { query }, { headers: mondayHeaders() });
-    return response.data.data?.items?.[0];
+
+    if (response.data.errors?.length) {
+        throw new Error(response.data.errors.map((e) => e.message).join('; '));
+    }
+
+    const item = response.data.data?.items?.[0];
+    if (!item) return null;
+
+    return {
+        name: item.name,
+        files: collectItemFiles(item),
+    };
 }
 
 /**

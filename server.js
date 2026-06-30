@@ -46,15 +46,16 @@ app.post('/webhook', async (req, res) => {
                 await mondayService.updateMondayFolderLink(event.pulseId, event.boardId, LINK_COLUMN_ID, rootFolder.webViewLink);
             }
 
-            for (const asset of item.assets || []) {
-                if (await googleService.fileExistsInFolder(asset.name, rootFolder.id)) {
-                    console.log(`[Skip] ${asset.name} already exists.`);
+            console.log(`[Sync] ${item.files.length} file(s) found on item`);
+            for (const file of item.files) {
+                if (await googleService.fileExistsInFolder(file.name, rootFolder.id)) {
+                    console.log(`[Skip] ${file.name} already exists.`);
                     continue;
                 }
 
-                console.log(`[Sync] Uploading ${asset.name}`);
-                const fileStream = await mondayService.downloadMondayFile(asset.public_url);
-                await googleService.uploadToDrive(asset.name, fileStream.data, rootFolder.id);
+                console.log(`[Sync] Uploading ${file.name}`);
+                const fileStream = await mondayService.downloadMondayFile(file.url);
+                await googleService.uploadToDrive(file.name, fileStream.data, rootFolder.id);
             }
 
         } catch (err) {
