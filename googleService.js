@@ -66,4 +66,46 @@ async function uploadToDrive(fileName, fileStream, folderId) {
     });
 }
 
-module.exports = { fileExistsInFolder, findOrCreateFolder, uploadToDrive };
+/**
+ * Lists non-folder files in a Drive folder.
+ */
+async function listFilesInFolder(folderId) {
+    const response = await drive.files.list({
+        q: `'${folderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+        fields: 'files(id, name)',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+    return response.data.files || [];
+}
+
+/**
+ * Permanently deletes a file from Drive.
+ */
+async function deleteFileFromDrive(fileId) {
+    await drive.files.delete({
+        fileId,
+        supportsAllDrives: true,
+    });
+}
+
+/**
+ * Removes Drive files that are no longer present in Monday (matched by filename).
+ */
+async function removeOrphanedFiles(folderId, mondayFileNames) {
+    const driveFiles = await listFilesInFolder(folderId);
+    const keepNames = new Set(mondayFileNames);
+
+    for (const driveFile of driveFiles) {
+        if (keepNames.has(driveFile.name)) continue;
+        console.log(`[Delete] Removing ${driveFile.name} from Drive`);
+        await deleteFileFromDrive(driveFile.id);
+    }
+}
+
+module.exports = {
+    fileExistsInFolder,
+    findOrCreateFolder,
+    uploadToDrive,
+    removeOrphanedFiles,
+};

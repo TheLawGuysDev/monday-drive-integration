@@ -47,6 +47,11 @@ app.post('/webhook', async (req, res) => {
             }
 
             console.log(`[Sync] ${item.files.length} file(s) found on item`);
+            await googleService.removeOrphanedFiles(
+                rootFolder.id,
+                item.files.map((file) => file.name)
+            );
+
             for (const file of item.files) {
                 if (await googleService.fileExistsInFolder(file.name, rootFolder.id)) {
                     console.log(`[Skip] ${file.name} already exists.`);
