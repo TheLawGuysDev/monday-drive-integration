@@ -53,14 +53,8 @@ app.post('/webhook', async (req, res) => {
             );
 
             for (const file of item.files) {
-                if (await googleService.fileExistsInFolder(file.name, rootFolder.id)) {
-                    console.log(`[Skip] ${file.name} already exists.`);
-                    continue;
-                }
-
-                console.log(`[Sync] Uploading ${file.name}`);
                 const fileStream = await mondayService.downloadMondayFile(file.url);
-                await googleService.uploadToDrive(file.name, fileStream.data, rootFolder.id);
+                await googleService.syncFileToDrive(file.name, fileStream.data, rootFolder.id);
             }
 
         } catch (err) {

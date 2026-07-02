@@ -12,21 +12,46 @@ oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
 const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
 /**
- * Checks if a file exists in a specific folder.
+ * Finds a file by name in a specific folder.
  */
-async function fileExistsInFolder(fileName, folderId) {
-    try {
-        const query = `name = '${fileName.replace(/'/g, "\\'")}' and '${folderId}' in parents and trashed = false`;
-        const response = await drive.files.list({
-            q: query,
-            fields: 'files(id)',
+async function findFileInFolder(fileName, folderId) {
+    const query = `name = '${fileName.replace(/'/g, "\\'")}' and '${folderId}' in parents and trashed = false`;
+    const response = await drive.files.list({
+        q: query,
+        fields: 'files(id, name)',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+    return response.data.files || [];
+}
+
+/**
+ * Uploads a new file or replaces existing file(s) with the same name in the folder.
+ */
+async function syncFileToDrive(fileName, fileStream, folderId) {
+    const existingFiles = await findFileInFolder(fileName, folderId);
+
+    if (existingFiles.length > 0) {
+        console.log(`[Replace] ${fileName}`);
+        await drive.files.update({
+            fileId: existingFiles[0].id,
+            media: { body: fileStream },
             supportsAllDrives: true,
-            includeItemsFromAllDrives: true,
         });
-        return response.data.files.length > 0;
-    } catch (err) {
-        return false;
+
+        for (const duplicate of existingFiles.slice(1)) {
+            console.log(`[Delete] Removing duplicate ${duplicate.name} from Drive`);
+            await deleteFileFromDrive(duplicate.id);
+        }
+        return;
     }
+
+    console.log(`[Sync] Uploading ${fileName}`);
+    await drive.files.create({
+        requestBody: { name: fileName, parents: [folderId] },
+        media: { body: fileStream },
+        supportsAllDrives: true
+    });
 }
 
 /**
@@ -56,13 +81,12 @@ async function findOrCreateFolder(folderName, parentId) {
 }
 
 /**
- * Uploads a file stream to a specific folder in Drive.
+ * Permanently deletes a file from Drive.
  */
-async function uploadToDrive(fileName, fileStream, folderId) {
-    return await drive.files.create({
-        requestBody: { name: fileName, parents: [folderId] },
-        media: { body: fileStream },
-        supportsAllDrives: true
+async function deleteFileFromDrive(fileId) {
+    await drive.files.delete({
+        fileId,
+        supportsAllDrives: true,
     });
 }
 
@@ -80,16 +104,6 @@ async function listFilesInFolder(folderId) {
 }
 
 /**
- * Permanently deletes a file from Drive.
- */
-async function deleteFileFromDrive(fileId) {
-    await drive.files.delete({
-        fileId,
-        supportsAllDrives: true,
-    });
-}
-
-/**
  * Removes Drive files that are no longer present in Monday (matched by filename).
  */
 async function removeOrphanedFiles(folderId, mondayFileNames) {
@@ -104,8 +118,7 @@ async function removeOrphanedFiles(folderId, mondayFileNames) {
 }
 
 module.exports = {
-    fileExistsInFolder,
     findOrCreateFolder,
-    uploadToDrive,
+    syncFileToDrive,
     removeOrphanedFiles,
 };
