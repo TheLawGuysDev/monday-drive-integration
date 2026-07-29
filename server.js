@@ -36,11 +36,19 @@ app.post('/webhook', async (req, res) => {
             const item = await mondayService.getMondayItemData(event.pulseId);
             if (!item) return res.status(200).send();
 
-            const rootFolder = await googleService.findOrCreateFolder(item.name, PARENT_FOLDER_ID);
+            // Folder: "Client Name - Company - pulseId" (company omitted if empty)
+            const { folderName } = mondayService.buildClientFolderName({
+                name: item.name,
+                company: item.company,
+                pulseId: event.pulseId,
+            });
+            const rootFolder = await googleService.findOrCreateFolder(folderName, PARENT_FOLDER_ID);
             if (!rootFolder) {
                 console.error('[Critical Error] Could not create/find root folder');
                 return res.status(200).send();
             }
+
+            console.log(`[Drive] Folder: ${folderName}`);
 
             if (event.type === 'create_pulse' || event.columnId === LINK_COLUMN_ID) {
                 await mondayService.updateMondayFolderLink(event.pulseId, event.boardId, LINK_COLUMN_ID, rootFolder.webViewLink);

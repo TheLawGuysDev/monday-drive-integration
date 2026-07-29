@@ -2,12 +2,36 @@ const axios = require('axios');
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const API_VERSION = '2024-01';
+const COMPANY_COLUMN_ID = process.env.COMPANY_COLUMN_ID || 'text';
 
 function mondayHeaders() {
     return {
         'Authorization': process.env.MONDAY_API_KEY,
         'API-Version': API_VERSION
     };
+}
+
+/**
+ * Folder: "Client Name - Company - pulseId"
+ * If company is empty: "Client Name - pulseId"
+ */
+function buildClientFolderName({ name, company, pulseId }) {
+    const clientName = String(name || '').trim() || 'Unnamed';
+    const companyName = String(company || '').trim();
+    const folderName = companyName
+        ? `${clientName} - ${companyName} - ${pulseId}`
+        : `${clientName} - ${pulseId}`;
+
+    return {
+        folderName,
+        // Unique per Monday item (pulseId) — safe to orphan-delete
+        sharedClientFolder: false,
+    };
+}
+
+function extractText(columnValue) {
+    if (!columnValue) return '';
+    return String(columnValue.text || '').trim();
 }
 
 function addFileToMap(filesByKey, { assetId, name, url }) {
@@ -48,7 +72,7 @@ function collectItemFiles(item) {
 }
 
 /**
- * Fetches item name and all files (item assets + every File column).
+ * Fetches item name, company, and all files (item assets + every File column).
  */
 async function getMondayItemData(itemId) {
     const query = `query {
@@ -60,6 +84,9 @@ async function getMondayItemData(itemId) {
                 public_url
             }
             column_values {
+                id
+                text
+                value
                 ... on FileValue {
                     files {
                         ... on FileAssetValue {
@@ -85,8 +112,11 @@ async function getMondayItemData(itemId) {
     const item = response.data.data?.items?.[0];
     if (!item) return null;
 
+    const companyColumn = (item.column_values || []).find((c) => c.id === COMPANY_COLUMN_ID);
+
     return {
         name: item.name,
+        company: extractText(companyColumn),
         files: collectItemFiles(item),
     };
 }
@@ -138,4 +168,10 @@ async function getMondayUserById(userId) {
     return users?.[0] ?? null;
 }
 
-module.exports = { getMondayItemData, updateMondayFolderLink, downloadMondayFile, getMondayUserById };
+module.exports = {
+    getMondayItemData,
+    updateMondayFolderLink,
+    downloadMondayFile,
+    getMondayUserById,
+    buildClientFolderName,
+};
