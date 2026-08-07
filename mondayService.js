@@ -43,24 +43,30 @@ function addFileToMap(filesByKey, { assetId, name, url }) {
 }
 
 /**
- * Merges item.assets with files from all File columns (deduped by asset id).
+ * Groups files by File column title (for Drive subfolders like "BG Sheet").
  */
-function collectItemFiles(item) {
-    const filesByKey = new Map();
-
-    for (const asset of item.assets || []) {
-        addFileToMap(filesByKey, {
-            assetId: asset.id,
-            name: asset.name,
-            url: asset.public_url,
-        });
-    }
+function collectFilesByColumn(item) {
+    const byColumn = new Map();
 
     for (const columnValue of item.column_values || []) {
-        for (const file of columnValue.files || []) {
+        if (!Array.isArray(columnValue.files) || columnValue.files.length === 0) continue;
+
+        const columnId = columnValue.id;
+        const columnTitle = (columnValue.column?.title || columnId || 'Files').trim();
+
+        if (!byColumn.has(columnId)) {
+            byColumn.set(columnId, {
+                columnId,
+                columnTitle,
+                filesByKey: new Map(),
+            });
+        }
+
+        const bucket = byColumn.get(columnId);
+        for (const file of columnValue.files) {
             if (file.asset_id == null) continue;
             const url = file.asset?.public_url || file.asset?.url;
-            addFileToMap(filesByKey, {
+            addFileToMap(bucket.filesByKey, {
                 assetId: file.asset_id,
                 name: file.name,
                 url,
@@ -68,26 +74,30 @@ function collectItemFiles(item) {
         }
     }
 
-    return [...filesByKey.values()];
+    return [...byColumn.values()]
+        .map(({ columnId, columnTitle, filesByKey }) => ({
+            columnId,
+            columnTitle,
+            files: [...filesByKey.values()],
+        }))
+        .filter((group) => group.files.length > 0);
 }
 
 /**
- * Fetches item name, company, and all files (item assets + every File column).
+ * Fetches item name, company, and files grouped by File column.
  */
 async function getMondayItemData(itemId) {
     const query = `query {
         items (ids: [${itemId}]) {
             name
-            assets {
-                id
-                name
-                public_url
-            }
             column_values {
                 id
                 text
                 value
                 ... on FileValue {
+                    column {
+                        title
+                    }
                     files {
                         ... on FileAssetValue {
                             asset_id
@@ -117,7 +127,7 @@ async function getMondayItemData(itemId) {
     return {
         name: item.name,
         company: extractText(companyColumn),
-        files: collectItemFiles(item),
+        fileColumns: collectFilesByColumn(item),
     };
 }
 
@@ -135,6 +145,31 @@ async function updateMondayFolderLink(itemId, boardId, columnId, folderUrl) {
         query,
         variables: { itemId: String(itemId), boardId: String(boardId), columnId, value }
     }, { headers: mondayHeaders() });
+}
+
+/**
+ * Clears all files from a Monday File column (does not delete files in Drive).
+ */
+async function clearMondayFileColumn(itemId, boardId, columnId) {
+    const query = `mutation ($itemId: ID!, $boardId: ID!, $columnId: String!, $value: JSON!) {
+        change_column_value (item_id: $itemId, board_id: $boardId, column_id: $columnId, value: $value) { id }
+    }`;
+
+    const value = JSON.stringify({ clear_all: true });
+
+    const response = await axios.post(MONDAY_API_URL, {
+        query,
+        variables: {
+            itemId: String(itemId),
+            boardId: String(boardId),
+            columnId,
+            value,
+        }
+    }, { headers: mondayHeaders() });
+
+    if (response.data.errors?.length) {
+        throw new Error(response.data.errors.map((e) => e.message).join('; '));
+    }
 }
 
 /**
@@ -171,6 +206,7 @@ async function getMondayUserById(userId) {
 module.exports = {
     getMondayItemData,
     updateMondayFolderLink,
+    clearMondayFileColumn,
     downloadMondayFile,
     getMondayUserById,
     buildClientFolderName,

@@ -9,6 +9,11 @@ app.use(express.json());
 // --- CONSTANTS ---
 const LINK_COLUMN_ID = "link_mm0f3036";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
+const DRIVE_UPLOAD_COLUMN_TITLE = (process.env.DRIVE_UPLOAD_COLUMN_TITLE || 'Drive Upload').toLowerCase();
+
+function isDriveUploadColumn(columnTitle) {
+    return String(columnTitle || '').trim().toLowerCase() === DRIVE_UPLOAD_COLUMN_TITLE;
+}
 
 app.post('/webhook', async (req, res) => {
     if (req.body.challenge) return res.status(200).send(req.body);
@@ -54,15 +59,41 @@ app.post('/webhook', async (req, res) => {
                 await mondayService.updateMondayFolderLink(event.pulseId, event.boardId, LINK_COLUMN_ID, rootFolder.webViewLink);
             }
 
-            console.log(`[Sync] ${item.files.length} file(s) found on item`);
-            await googleService.removeOrphanedFiles(
-                rootFolder.id,
-                item.files.map((file) => file.name)
-            );
+            const totalFiles = item.fileColumns.reduce((sum, col) => sum + col.files.length, 0);
+            console.log(`[Sync] ${totalFiles} file(s) across ${item.fileColumns.length} column folder(s)`);
 
-            for (const file of item.files) {
-                const fileStream = await mondayService.downloadMondayFile(file.url);
-                await googleService.syncFileToDrive(file.name, fileStream.data, rootFolder.id);
+            for (const column of item.fileColumns) {
+                const isStagingUpload = isDriveUploadColumn(column.columnTitle);
+                const columnFolder = await googleService.findOrCreateFolder(column.columnTitle, rootFolder.id);
+                if (!columnFolder) {
+                    console.error(`[Critical Error] Could not create/find column folder: ${column.columnTitle}`);
+                    continue;
+                }
+
+                console.log(`[Drive] Subfolder: ${column.columnTitle} (${column.files.length} file(s))${isStagingUpload ? ' [staging]' : ''}`);
+
+                // Drive Upload is staging: keep files in Drive even after Monday column is cleared.
+                if (!isStagingUpload) {
+                    await googleService.removeOrphanedFiles(
+                        columnFolder.id,
+                        column.files.map((file) => file.name)
+                    );
+                }
+
+                for (const file of column.files) {
+                    const fileStream = await mondayService.downloadMondayFile(file.url);
+                    await googleService.syncFileToDrive(file.name, fileStream.data, columnFolder.id);
+                }
+
+                // After a successful upload, clear only the "Drive Upload" Monday column.
+                if (isStagingUpload) {
+                    await mondayService.clearMondayFileColumn(
+                        event.pulseId,
+                        event.boardId,
+                        column.columnId
+                    );
+                    console.log(`[Monday] Cleared "${column.columnTitle}" column after Drive upload`);
+                }
             }
 
         } catch (err) {
