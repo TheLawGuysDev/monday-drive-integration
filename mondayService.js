@@ -173,10 +173,68 @@ async function clearMondayFileColumn(itemId, boardId, columnId) {
 }
 
 /**
+ * Creates an item update (used to keep files visible in Monday Files after clearing a column).
+ */
+async function createMondayUpdate(itemId, body) {
+    const query = `mutation ($itemId: ID!, $body: String!) {
+        create_update (item_id: $itemId, body: $body) { id }
+    }`;
+
+    const response = await axios.post(MONDAY_API_URL, {
+        query,
+        variables: { itemId: String(itemId), body }
+    }, { headers: mondayHeaders() });
+
+    if (response.data.errors?.length) {
+        throw new Error(response.data.errors.map((e) => e.message).join('; '));
+    }
+
+    return response.data.data?.create_update?.id;
+}
+
+/**
+ * Attaches a file to an update so it remains in the item Files section.
+ */
+async function addFileToMondayUpdate(updateId, fileName, fileBuffer) {
+    const FormData = require('form-data');
+    const form = new FormData();
+    const query = `mutation ($file: File!) {
+        add_file_to_update (update_id: ${updateId}, file: $file) { id }
+    }`;
+
+    form.append('query', query);
+    form.append('map', JSON.stringify({ file: 'variables.file' }));
+    form.append('file', fileBuffer, { filename: fileName });
+
+    const response = await axios.post('https://api.monday.com/v2/file', form, {
+        headers: {
+            ...mondayHeaders(),
+            ...form.getHeaders(),
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+    });
+
+    if (response.data.errors?.length) {
+        throw new Error(response.data.errors.map((e) => e.message).join('; '));
+    }
+
+    return response.data.data?.add_file_to_update;
+}
+
+/**
  * Downloads a file from a URL as a stream.
  */
 async function downloadMondayFile(url) {
     return await axios({ method: 'get', url, responseType: 'stream' });
+}
+
+/**
+ * Downloads a file from a URL as a Buffer (for Drive + re-attach to Monday update).
+ */
+async function downloadMondayFileBuffer(url) {
+    const response = await axios({ method: 'get', url, responseType: 'arraybuffer' });
+    return Buffer.from(response.data);
 }
 
 /**
@@ -207,7 +265,10 @@ module.exports = {
     getMondayItemData,
     updateMondayFolderLink,
     clearMondayFileColumn,
+    createMondayUpdate,
+    addFileToMondayUpdate,
     downloadMondayFile,
+    downloadMondayFileBuffer,
     getMondayUserById,
     buildClientFolderName,
 };

@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const { Readable } = require('stream');
 const mondayService = require('./mondayService');
 const googleService = require('./googleService');
 
@@ -80,19 +81,31 @@ app.post('/webhook', async (req, res) => {
                     );
                 }
 
-                for (const file of column.files) {
-                    const fileStream = await mondayService.downloadMondayFile(file.url);
-                    await googleService.syncFileToDrive(file.name, fileStream.data, columnFolder.id);
-                }
-
-                // After a successful upload, clear only the "Drive Upload" Monday column.
                 if (isStagingUpload) {
+                    // Keep files in Monday Files by attaching them to an update before clearing the column.
+                    const updateId = await mondayService.createMondayUpdate(
+                        event.pulseId,
+                        `Synced to Google Drive (${column.files.length} file(s))`
+                    );
+
+                    for (const file of column.files) {
+                        const buffer = await mondayService.downloadMondayFileBuffer(file.url);
+                        await googleService.syncFileToDrive(file.name, Readable.from(buffer), columnFolder.id);
+                        await mondayService.addFileToMondayUpdate(updateId, file.name, buffer);
+                        console.log(`[Monday] Kept "${file.name}" in Files via update ${updateId}`);
+                    }
+
                     await mondayService.clearMondayFileColumn(
                         event.pulseId,
                         event.boardId,
                         column.columnId
                     );
                     console.log(`[Monday] Cleared "${column.columnTitle}" column after Drive upload`);
+                } else {
+                    for (const file of column.files) {
+                        const fileStream = await mondayService.downloadMondayFile(file.url);
+                        await googleService.syncFileToDrive(file.name, fileStream.data, columnFolder.id);
+                    }
                 }
             }
 
