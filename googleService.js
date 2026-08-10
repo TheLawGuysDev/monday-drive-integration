@@ -26,31 +26,96 @@ async function findFileInFolder(fileName, folderId) {
 }
 
 /**
- * Uploads a new file or replaces existing file(s) with the same name in the folder.
+ * Parses "report.pdf" / "report (2).pdf" into stem, version, and extension.
  */
-async function syncFileToDrive(fileName, fileStream, folderId) {
-    const existingFiles = await findFileInFolder(fileName, folderId);
+function parseVersionedName(fileName) {
+    const lastDot = fileName.lastIndexOf('.');
+    const hasExt = lastDot > 0;
+    const base = hasExt ? fileName.slice(0, lastDot) : fileName;
+    const ext = hasExt ? fileName.slice(lastDot) : '';
+    const match = base.match(/^(.*) \((\d+)\)$/);
+    if (match) {
+        return { stem: match[1], version: Number(match[2]), ext };
+    }
+    return { stem: base, version: 1, ext };
+}
 
-    if (existingFiles.length > 0) {
-        console.log(`[Replace] ${fileName}`);
-        await drive.files.update({
-            fileId: existingFiles[0].id,
-            media: { body: fileStream },
-            supportsAllDrives: true,
-        });
+function buildVersionedName(stem, version, ext) {
+    if (version <= 1) return `${stem}${ext}`;
+    return `${stem} (${version})${ext}`;
+}
 
-        for (const duplicate of existingFiles.slice(1)) {
-            console.log(`[Delete] Removing duplicate ${duplicate.name} from Drive`);
-            await deleteFileFromDrive(duplicate.id);
+function fileBaseKey(fileName) {
+    const { stem, ext } = parseVersionedName(fileName);
+    return `${stem}|${ext}`;
+}
+
+/**
+ * Next free name in folder: file.pdf → file (2).pdf → file (3).pdf ...
+ */
+async function getNextVersionedFileName(fileName, folderId) {
+    const { stem, ext } = parseVersionedName(fileName);
+    const driveFiles = await listFilesInFolder(folderId);
+    let maxVersion = 0;
+
+    for (const driveFile of driveFiles) {
+        const parsed = parseVersionedName(driveFile.name);
+        if (parsed.stem === stem && parsed.ext === ext) {
+            maxVersion = Math.max(maxVersion, parsed.version);
         }
-        return;
     }
 
-    console.log(`[Sync] Uploading ${fileName}`);
-    await drive.files.create({
-        requestBody: { name: fileName, parents: [folderId] },
+    if (maxVersion === 0) return buildVersionedName(stem, 1, ext);
+    return buildVersionedName(stem, maxVersion + 1, ext);
+}
+
+/**
+ * Finds a Drive file previously synced from a Monday asset id.
+ */
+async function findFileByMondayAssetId(folderId, assetId) {
+    if (!assetId) return null;
+    const response = await drive.files.list({
+        q: `'${folderId}' in parents and trashed = false and appProperties has { key='mondayAssetId' and value='${String(assetId).replace(/'/g, "\\'")}' }`,
+        fields: 'files(id, name)',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+    return response.data.files?.[0] || null;
+}
+
+/**
+ * Uploads a file without overwriting. Same Monday asset → skip.
+ * Same filename / new asset → creates file (2), file (3), etc.
+ */
+async function syncFileToDrive(fileName, fileStream, folderId, assetId = null) {
+    if (assetId) {
+        const alreadySynced = await findFileByMondayAssetId(folderId, assetId);
+        if (alreadySynced) {
+            console.log(`[Skip] ${fileName} already synced as "${alreadySynced.name}"`);
+            return alreadySynced;
+        }
+    }
+
+    const uploadName = await getNextVersionedFileName(fileName, folderId);
+    if (uploadName !== fileName) {
+        console.log(`[Version] ${fileName} → ${uploadName}`);
+    } else {
+        console.log(`[Sync] Uploading ${uploadName}`);
+    }
+
+    const requestBody = {
+        name: uploadName,
+        parents: [folderId],
+    };
+    if (assetId) {
+        requestBody.appProperties = { mondayAssetId: String(assetId) };
+    }
+
+    return await drive.files.create({
+        requestBody,
         media: { body: fileStream },
-        supportsAllDrives: true
+        fields: 'id, name',
+        supportsAllDrives: true,
     });
 }
 
@@ -61,7 +126,7 @@ async function findOrCreateFolder(folderName, parentId) {
     try {
         const response = await drive.files.list({
             q: `name = '${folderName.replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
-            fields: 'files(id, webViewLink)',
+            fields: 'files(id, name, webViewLink)',
             supportsAllDrives: true,
             includeItemsFromAllDrives: true
         });
@@ -70,12 +135,70 @@ async function findOrCreateFolder(folderName, parentId) {
 
         const newFolder = await drive.files.create({
             resource: { name: folderName, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
-            fields: 'id, webViewLink',
+            fields: 'id, name, webViewLink',
             supportsAllDrives: true
         });
         return newFolder.data;
     } catch (err) {
         console.error(`[Drive Error] findOrCreateFolder: ${err.message}`);
+        return null;
+    }
+}
+
+/**
+ * Finds a client folder by Monday pulseId (unique id in the folder name).
+ * Prefers names ending with " - {pulseId}".
+ */
+async function findFolderByPulseId(pulseId, parentId) {
+    const id = String(pulseId);
+    const response = await drive.files.list({
+        q: `mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false and name contains '${id.replace(/'/g, "\\'")}'`,
+        fields: 'files(id, name, webViewLink)',
+        pageSize: 100,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+
+    const folders = response.data.files || [];
+    const dashSuffix = ` - ${id}`;
+    const parenSuffix = `(${id})`;
+
+    return (
+        folders.find((f) => f.name.endsWith(dashSuffix)) ||
+        folders.find((f) => f.name.endsWith(parenSuffix)) ||
+        folders.find((f) => f.name.includes(id)) ||
+        null
+    );
+}
+
+/**
+ * Resolves the client folder by unique id (pulseId):
+ * - If a folder with that id exists and the name matches → reuse it
+ * - If it exists but the client name changed → rename it
+ * - If it does not exist → create "Name - pulseId"
+ */
+async function findOrRenameClientFolder(desiredFolderName, pulseId, parentId) {
+    try {
+        const existing = await findFolderByPulseId(pulseId, parentId);
+
+        if (existing) {
+            if (existing.name === desiredFolderName) {
+                return existing;
+            }
+
+            console.log(`[Rename] "${existing.name}" → "${desiredFolderName}"`);
+            const updated = await drive.files.update({
+                fileId: existing.id,
+                requestBody: { name: desiredFolderName },
+                fields: 'id, name, webViewLink',
+                supportsAllDrives: true,
+            });
+            return updated.data;
+        }
+
+        return await findOrCreateFolder(desiredFolderName, parentId);
+    } catch (err) {
+        console.error(`[Drive Error] findOrRenameClientFolder: ${err.message}`);
         return null;
     }
 }
@@ -104,14 +227,15 @@ async function listFilesInFolder(folderId) {
 }
 
 /**
- * Removes Drive files that are no longer present in Monday (matched by filename).
+ * Removes Drive files whose base name is no longer present in Monday.
+ * Keeps version siblings: if Monday has "report.pdf", keeps "report (2).pdf" too.
  */
 async function removeOrphanedFiles(folderId, mondayFileNames) {
     const driveFiles = await listFilesInFolder(folderId);
-    const keepNames = new Set(mondayFileNames);
+    const keepBases = new Set(mondayFileNames.map(fileBaseKey));
 
     for (const driveFile of driveFiles) {
-        if (keepNames.has(driveFile.name)) continue;
+        if (keepBases.has(fileBaseKey(driveFile.name))) continue;
         console.log(`[Delete] Removing ${driveFile.name} from Drive`);
         await deleteFileFromDrive(driveFile.id);
     }
@@ -119,6 +243,7 @@ async function removeOrphanedFiles(folderId, mondayFileNames) {
 
 module.exports = {
     findOrCreateFolder,
+    findOrRenameClientFolder,
     syncFileToDrive,
     removeOrphanedFiles,
 };

@@ -2,7 +2,6 @@ const axios = require('axios');
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const API_VERSION = '2024-01';
-const COMPANY_COLUMN_ID = process.env.COMPANY_COLUMN_ID || 'text';
 
 function mondayHeaders() {
     return {
@@ -12,26 +11,15 @@ function mondayHeaders() {
 }
 
 /**
- * Folder: "Client Name - Company - pulseId"
- * If company is empty: "Client Name - pulseId"
+ * Folder: "Client Name - pulseId"
  */
-function buildClientFolderName({ name, company, pulseId }) {
+function buildClientFolderName({ name, pulseId }) {
     const clientName = String(name || '').trim() || 'Unnamed';
-    const companyName = String(company || '').trim();
-    const folderName = companyName
-        ? `${clientName} - ${companyName} - ${pulseId}`
-        : `${clientName} - ${pulseId}`;
-
     return {
-        folderName,
+        folderName: `${clientName} - ${pulseId}`,
         // Unique per Monday item (pulseId) — safe to orphan-delete
         sharedClientFolder: false,
     };
-}
-
-function extractText(columnValue) {
-    if (!columnValue) return '';
-    return String(columnValue.text || '').trim();
 }
 
 function addFileToMap(filesByKey, { assetId, name, url }) {
@@ -84,7 +72,7 @@ function collectFilesByColumn(item) {
 }
 
 /**
- * Fetches item name, company, and files grouped by File column.
+ * Fetches item name and files grouped by File column.
  */
 async function getMondayItemData(itemId) {
     const query = `query {
@@ -122,11 +110,8 @@ async function getMondayItemData(itemId) {
     const item = response.data.data?.items?.[0];
     if (!item) return null;
 
-    const companyColumn = (item.column_values || []).find((c) => c.id === COMPANY_COLUMN_ID);
-
     return {
         name: item.name,
-        company: extractText(companyColumn),
         fileColumns: collectFilesByColumn(item),
     };
 }

@@ -10,10 +10,16 @@ app.use(express.json());
 // --- CONSTANTS ---
 const LINK_COLUMN_ID = "link_mm0f3036";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
-const DRIVE_UPLOAD_COLUMN_TITLE = (process.env.DRIVE_UPLOAD_COLUMN_TITLE || 'Drive Upload').toLowerCase();
+// Staging columns: upload to Drive, keep in Monday Files via update, then clear the column.
+const STAGING_UPLOAD_COLUMN_TITLES = new Set(
+    (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
+        .split(',')
+        .map((title) => title.trim().toLowerCase())
+        .filter(Boolean)
+);
 
-function isDriveUploadColumn(columnTitle) {
-    return String(columnTitle || '').trim().toLowerCase() === DRIVE_UPLOAD_COLUMN_TITLE;
+function isStagingUploadColumn(columnTitle) {
+    return STAGING_UPLOAD_COLUMN_TITLES.has(String(columnTitle || '').trim().toLowerCase());
 }
 
 app.post('/webhook', async (req, res) => {
@@ -42,19 +48,22 @@ app.post('/webhook', async (req, res) => {
             const item = await mondayService.getMondayItemData(event.pulseId);
             if (!item) return res.status(200).send();
 
-            // Folder: "Client Name - Company - pulseId" (company omitted if empty)
+            // Folder: "Client Name - pulseId" (rename in place if name changes)
             const { folderName } = mondayService.buildClientFolderName({
                 name: item.name,
-                company: item.company,
                 pulseId: event.pulseId,
             });
-            const rootFolder = await googleService.findOrCreateFolder(folderName, PARENT_FOLDER_ID);
+            const rootFolder = await googleService.findOrRenameClientFolder(
+                folderName,
+                event.pulseId,
+                PARENT_FOLDER_ID
+            );
             if (!rootFolder) {
                 console.error('[Critical Error] Could not create/find root folder');
                 return res.status(200).send();
             }
 
-            console.log(`[Drive] Folder: ${folderName}`);
+            console.log(`[Drive] Folder: ${rootFolder.name || folderName}`);
 
             if (event.type === 'create_pulse' || event.columnId === LINK_COLUMN_ID) {
                 await mondayService.updateMondayFolderLink(event.pulseId, event.boardId, LINK_COLUMN_ID, rootFolder.webViewLink);
@@ -64,7 +73,7 @@ app.post('/webhook', async (req, res) => {
             console.log(`[Sync] ${totalFiles} file(s) across ${item.fileColumns.length} column folder(s)`);
 
             for (const column of item.fileColumns) {
-                const isStagingUpload = isDriveUploadColumn(column.columnTitle);
+                const isStagingUpload = isStagingUploadColumn(column.columnTitle);
                 const columnFolder = await googleService.findOrCreateFolder(column.columnTitle, rootFolder.id);
                 if (!columnFolder) {
                     console.error(`[Critical Error] Could not create/find column folder: ${column.columnTitle}`);
@@ -73,7 +82,7 @@ app.post('/webhook', async (req, res) => {
 
                 console.log(`[Drive] Subfolder: ${column.columnTitle} (${column.files.length} file(s))${isStagingUpload ? ' [staging]' : ''}`);
 
-                // Drive Upload is staging: keep files in Drive even after Monday column is cleared.
+                // Staging columns keep files in Drive even after the Monday column is cleared.
                 if (!isStagingUpload) {
                     await googleService.removeOrphanedFiles(
                         columnFolder.id,
@@ -90,7 +99,12 @@ app.post('/webhook', async (req, res) => {
 
                     for (const file of column.files) {
                         const buffer = await mondayService.downloadMondayFileBuffer(file.url);
-                        await googleService.syncFileToDrive(file.name, Readable.from(buffer), columnFolder.id);
+                        await googleService.syncFileToDrive(
+                            file.name,
+                            Readable.from(buffer),
+                            columnFolder.id,
+                            file.assetId
+                        );
                         await mondayService.addFileToMondayUpdate(updateId, file.name, buffer);
                         console.log(`[Monday] Kept "${file.name}" in Files via update ${updateId}`);
                     }
@@ -104,7 +118,12 @@ app.post('/webhook', async (req, res) => {
                 } else {
                     for (const file of column.files) {
                         const fileStream = await mondayService.downloadMondayFile(file.url);
-                        await googleService.syncFileToDrive(file.name, fileStream.data, columnFolder.id);
+                        await googleService.syncFileToDrive(
+                            file.name,
+                            fileStream.data,
+                            columnFolder.id,
+                            file.assetId
+                        );
                     }
                 }
             }
