@@ -146,24 +146,40 @@ async function getBoardGroups(boardId) {
 
 /**
  * True when the item is in the target group or any group after it on the board.
+ * Uses the groups array order from Monday (top → bottom), not raw position quirks.
  */
 function isItemInOrAfterGroup(itemGroup, boardGroups, targetGroupTitle) {
-    if (!itemGroup?.id || !boardGroups?.length || !targetGroupTitle) return false;
-
-    const targetTitle = String(targetGroupTitle).trim().toLowerCase();
-    const target = boardGroups.find((g) => String(g.title || '').trim().toLowerCase() === targetTitle);
-    if (!target) return false;
-
-    const current = boardGroups.find((g) => String(g.id) === String(itemGroup.id));
-    if (!current) return false;
-
-    const targetPos = Number(target.position);
-    const currentPos = Number(current.position);
-    if (Number.isNaN(targetPos) || Number.isNaN(currentPos)) {
-        return String(current.id) === String(target.id);
+    if (!itemGroup?.id || !boardGroups?.length || !targetGroupTitle) {
+        return { allowed: false, reason: 'missing_group_data' };
     }
 
-    return currentPos >= targetPos;
+    const targetTitle = String(targetGroupTitle).trim().toLowerCase();
+    const targetIndex = boardGroups.findIndex(
+        (g) => String(g.title || '').trim().toLowerCase() === targetTitle
+    );
+    if (targetIndex < 0) {
+        return { allowed: false, reason: 'target_group_not_found', targetTitle };
+    }
+
+    const currentIndex = boardGroups.findIndex((g) => String(g.id) === String(itemGroup.id));
+    if (currentIndex < 0) {
+        return {
+            allowed: false,
+            reason: 'item_group_not_on_board',
+            itemGroupTitle: itemGroup.title,
+            itemGroupId: itemGroup.id,
+        };
+    }
+
+    const allowed = currentIndex >= targetIndex;
+    return {
+        allowed,
+        reason: allowed ? 'ok' : 'before_target_group',
+        currentIndex,
+        targetIndex,
+        itemGroupTitle: boardGroups[currentIndex].title,
+        targetGroupTitle: boardGroups[targetIndex].title,
+    };
 }
 
 /**

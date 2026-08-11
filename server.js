@@ -52,21 +52,28 @@ app.post('/webhook', async (req, res) => {
             if (!item) return res.status(200).send();
 
             const boardGroups = await mondayService.getBoardGroups(event.boardId);
-            const allowedByGroup = mondayService.isItemInOrAfterGroup(
+            const groupCheck = mondayService.isItemInOrAfterGroup(
                 item.group,
                 boardGroups,
                 SYNC_FROM_GROUP_TITLE
             );
 
-            if (!allowedByGroup) {
+            console.log('[GroupCheck]', {
+                boardId: event.boardId,
+                itemGroup: item.group,
+                syncFrom: SYNC_FROM_GROUP_TITLE,
+                boardGroupCount: boardGroups.length,
+                ...groupCheck,
+            });
+
+            if (!groupCheck.allowed) {
                 console.log(
-                    `[Skip] Item ${event.pulseId} is in group "${item.group?.title || 'unknown'}" ` +
-                    `(sync starts at "${SYNC_FROM_GROUP_TITLE}" or later)`
+                    `[Skip] Item ${event.pulseId} blocked by group filter (${groupCheck.reason})`
                 );
                 return res.status(200).send({ message: 'Skipped: before sync group' });
             }
 
-            console.log(`[Group] OK — "${item.group?.title}"`);
+            console.log(`[Group] OK — "${groupCheck.itemGroupTitle}"`);
 
             // Folder: "Client Name - pulseId" (rename in place if name changes)
             const { folderName } = mondayService.buildClientFolderName({
