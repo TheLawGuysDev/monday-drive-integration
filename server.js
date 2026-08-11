@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const { Readable } = require('stream');
 const mondayService = require('./mondayService');
 const googleService = require('./googleService');
 
@@ -13,7 +12,7 @@ const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
 const SYNC_FROM_GROUP_TITLE =
     process.env.SYNC_FROM_GROUP_TITLE ||
     "UPDATE BG SHEET - Client Auto Emailed 'Welcome Letter'";
-// Staging columns: upload to Drive, keep in Monday Files via update, then clear the column.
+// Staging columns: upload to Drive, then clear the Monday column (no update re-attach).
 const STAGING_UPLOAD_COLUMN_TITLES = new Set(
     (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
         .split(',')
@@ -122,22 +121,16 @@ app.post('/webhook', async (req, res) => {
                 }
 
                 if (isStagingUpload) {
-                    // Keep files in Monday Files by attaching them to an update before clearing the column.
-                    const updateId = await mondayService.createMondayUpdate(
-                        event.pulseId,
-                        `Synced to Google Drive (${column.files.length} file(s))`
-                    );
-
+                    // Staging: sync only what's currently in this column, then clear it.
+                    // Do NOT re-attach to Updates (that created duplicate assets and re-uploaded old files).
                     for (const file of column.files) {
-                        const buffer = await mondayService.downloadMondayFileBuffer(file.url);
+                        const fileStream = await mondayService.downloadMondayFile(file.url);
                         await googleService.syncFileToDrive(
                             file.name,
-                            Readable.from(buffer),
+                            fileStream.data,
                             columnFolder.id,
                             file.assetId
                         );
-                        await mondayService.addFileToMondayUpdate(updateId, file.name, buffer);
-                        console.log(`[Monday] Kept "${file.name}" in Files via update ${updateId}`);
                     }
 
                     await mondayService.clearMondayFileColumn(
@@ -145,7 +138,9 @@ app.post('/webhook', async (req, res) => {
                         event.boardId,
                         column.columnId
                     );
-                    console.log(`[Monday] Cleared "${column.columnTitle}" column after Drive upload`);
+                    console.log(
+                        `[Monday] Cleared "${column.columnTitle}" after uploading ${column.files.length} file(s) to Drive`
+                    );
                 } else {
                     for (const file of column.files) {
                         const fileStream = await mondayService.downloadMondayFile(file.url);

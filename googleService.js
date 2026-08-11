@@ -47,26 +47,41 @@ function buildVersionedName(stem, version, ext) {
 
 function fileBaseKey(fileName) {
     const { stem, ext } = parseVersionedName(fileName);
-    return `${stem}|${ext}`;
+    return `${stem.toLowerCase()}|${ext.toLowerCase()}`;
 }
 
 /**
  * Next free name in folder: file.pdf → file (2).pdf → file (3).pdf ...
+ * Never reuses an existing name (avoids looking like a replace).
  */
 async function getNextVersionedFileName(fileName, folderId) {
     const { stem, ext } = parseVersionedName(fileName);
     const driveFiles = await listFilesInFolder(folderId);
+    const usedNames = new Set(driveFiles.map((f) => f.name));
     let maxVersion = 0;
 
     for (const driveFile of driveFiles) {
         const parsed = parseVersionedName(driveFile.name);
-        if (parsed.stem === stem && parsed.ext === ext) {
+        if (
+            parsed.stem.toLowerCase() === stem.toLowerCase() &&
+            parsed.ext.toLowerCase() === ext.toLowerCase()
+        ) {
             maxVersion = Math.max(maxVersion, parsed.version);
         }
     }
 
-    if (maxVersion === 0) return buildVersionedName(stem, 1, ext);
-    return buildVersionedName(stem, maxVersion + 1, ext);
+    // Exact same name already present → at least version 2
+    if (maxVersion === 0 && [...usedNames].some((n) => n.toLowerCase() === fileName.toLowerCase())) {
+        maxVersion = 1;
+    }
+
+    let nextVersion = maxVersion === 0 ? 1 : maxVersion + 1;
+    let candidate = buildVersionedName(stem, nextVersion, ext);
+    while ([...usedNames].some((n) => n.toLowerCase() === candidate.toLowerCase())) {
+        nextVersion += 1;
+        candidate = buildVersionedName(stem, nextVersion, ext);
+    }
+    return candidate;
 }
 
 /**
@@ -77,8 +92,10 @@ async function findFileByMondayAssetId(folderId, assetId) {
     const response = await drive.files.list({
         q: `'${folderId}' in parents and trashed = false and appProperties has { key='mondayAssetId' and value='${String(assetId).replace(/'/g, "\\'")}' }`,
         fields: 'files(id, name)',
-        supportsAllDrives: true,
+        pageSize: 100,
+        corpora: 'allDrives',
         includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
     });
     return response.data.files?.[0] || null;
 }
@@ -86,21 +103,22 @@ async function findFileByMondayAssetId(folderId, assetId) {
 /**
  * Uploads a file without overwriting. Same Monday asset → skip.
  * Same filename / new asset → creates file (2), file (3), etc.
+ * Applies to ALL file columns (BG Sheet, etc.) — not only staging columns.
  */
 async function syncFileToDrive(fileName, fileStream, folderId, assetId = null) {
     if (assetId) {
         const alreadySynced = await findFileByMondayAssetId(folderId, assetId);
         if (alreadySynced) {
-            console.log(`[Skip] ${fileName} already synced as "${alreadySynced.name}"`);
+            console.log(`[Skip] ${fileName} already synced as "${alreadySynced.name}" (asset ${assetId})`);
             return alreadySynced;
         }
     }
 
     const uploadName = await getNextVersionedFileName(fileName, folderId);
     if (uploadName !== fileName) {
-        console.log(`[Version] ${fileName} → ${uploadName}`);
+        console.log(`[Version] ${fileName} → ${uploadName} (asset ${assetId || 'n/a'})`);
     } else {
-        console.log(`[Sync] Uploading ${uploadName}`);
+        console.log(`[Sync] Uploading ${uploadName} (asset ${assetId || 'n/a'})`);
     }
 
     const requestBody = {
@@ -111,12 +129,15 @@ async function syncFileToDrive(fileName, fileStream, folderId, assetId = null) {
         requestBody.appProperties = { mondayAssetId: String(assetId) };
     }
 
-    return await drive.files.create({
+    // Always create a new Drive file — never files.update (would replace content).
+    const created = await drive.files.create({
         requestBody,
         media: { body: fileStream },
         fields: 'id, name',
         supportsAllDrives: true,
     });
+    console.log(`[Drive] Created "${created.data.name}" (${created.data.id})`);
+    return created.data;
 }
 
 /**
@@ -220,8 +241,10 @@ async function listFilesInFolder(folderId) {
     const response = await drive.files.list({
         q: `'${folderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
         fields: 'files(id, name)',
-        supportsAllDrives: true,
+        pageSize: 1000,
+        corpora: 'allDrives',
         includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
     });
     return response.data.files || [];
 }
