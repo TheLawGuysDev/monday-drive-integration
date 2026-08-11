@@ -72,12 +72,27 @@ function collectFilesByColumn(item) {
 }
 
 /**
- * Fetches item name, current group, and files grouped by File column.
+ * Normalizes group titles for comparison (quotes/spaces).
+ */
+function normalizeGroupTitle(title) {
+    return String(title || '')
+        .normalize('NFKC')
+        .replace(/[\u2018\u2019\u201A\u201B`]/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+/**
+ * Fetches item name, board, current group, and files grouped by File column.
  */
 async function getMondayItemData(itemId) {
     const query = `query {
         items (ids: [${itemId}]) {
             name
+            board {
+                id
+            }
             group {
                 id
                 title
@@ -116,15 +131,18 @@ async function getMondayItemData(itemId) {
 
     return {
         name: item.name,
+        boardId: item.board?.id || null,
         group: item.group || null,
         fileColumns: collectFilesByColumn(item),
     };
 }
 
 /**
- * Fetches board groups with position (top → bottom order).
+ * Fetches board groups sorted top → bottom by position.
  */
 async function getBoardGroups(boardId) {
+    if (boardId == null || boardId === '') return [];
+
     const query = `query {
         boards (ids: [${boardId}]) {
             groups {
@@ -141,33 +159,58 @@ async function getBoardGroups(boardId) {
         throw new Error(response.data.errors.map((e) => e.message).join('; '));
     }
 
-    return response.data.data?.boards?.[0]?.groups || [];
+    const groups = response.data.data?.boards?.[0]?.groups || [];
+    return [...groups].sort((a, b) => Number(a.position) - Number(b.position));
 }
 
 /**
  * True when the item is in the target group or any group after it on the board.
- * Uses the groups array order from Monday (top → bottom), not raw position quirks.
  */
 function isItemInOrAfterGroup(itemGroup, boardGroups, targetGroupTitle) {
     if (!itemGroup?.id || !boardGroups?.length || !targetGroupTitle) {
-        return { allowed: false, reason: 'missing_group_data' };
+        return {
+            allowed: false,
+            reason: 'missing_group_data',
+            boardGroupCount: boardGroups?.length || 0,
+            hasItemGroup: Boolean(itemGroup?.id),
+        };
     }
 
-    const targetTitle = String(targetGroupTitle).trim().toLowerCase();
+    const targetNorm = normalizeGroupTitle(targetGroupTitle);
     const targetIndex = boardGroups.findIndex(
-        (g) => String(g.title || '').trim().toLowerCase() === targetTitle
+        (g) => normalizeGroupTitle(g.title) === targetNorm
     );
     if (targetIndex < 0) {
-        return { allowed: false, reason: 'target_group_not_found', targetTitle };
+        return {
+            allowed: false,
+            reason: 'target_group_not_found',
+            targetTitle: targetGroupTitle,
+            availableGroups: boardGroups.map((g) => g.title),
+        };
     }
 
     const currentIndex = boardGroups.findIndex((g) => String(g.id) === String(itemGroup.id));
     if (currentIndex < 0) {
+        // Fallback: compare by normalized title if ids don't line up
+        const byTitleIndex = boardGroups.findIndex(
+            (g) => normalizeGroupTitle(g.title) === normalizeGroupTitle(itemGroup.title)
+        );
+        if (byTitleIndex < 0) {
+            return {
+                allowed: false,
+                reason: 'item_group_not_on_board',
+                itemGroupTitle: itemGroup.title,
+                itemGroupId: itemGroup.id,
+            };
+        }
+        const allowedByTitle = byTitleIndex >= targetIndex;
         return {
-            allowed: false,
-            reason: 'item_group_not_on_board',
-            itemGroupTitle: itemGroup.title,
-            itemGroupId: itemGroup.id,
+            allowed: allowedByTitle,
+            reason: allowedByTitle ? 'ok_title_fallback' : 'before_target_group',
+            currentIndex: byTitleIndex,
+            targetIndex,
+            itemGroupTitle: boardGroups[byTitleIndex].title,
+            targetGroupTitle: boardGroups[targetIndex].title,
         };
     }
 

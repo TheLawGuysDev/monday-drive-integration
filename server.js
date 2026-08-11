@@ -51,20 +51,23 @@ app.post('/webhook', async (req, res) => {
             const item = await mondayService.getMondayItemData(event.pulseId);
             if (!item) return res.status(200).send();
 
-            const boardGroups = await mondayService.getBoardGroups(event.boardId);
+            const boardId = event.boardId || item.boardId;
+            const boardGroups = await mondayService.getBoardGroups(boardId);
             const groupCheck = mondayService.isItemInOrAfterGroup(
                 item.group,
                 boardGroups,
                 SYNC_FROM_GROUP_TITLE
             );
 
-            console.log('[GroupCheck]', {
-                boardId: event.boardId,
+            console.log(`[GroupCheck] ${JSON.stringify({
+                eventBoardId: event.boardId,
+                itemBoardId: item.boardId,
+                boardIdUsed: boardId,
                 itemGroup: item.group,
                 syncFrom: SYNC_FROM_GROUP_TITLE,
                 boardGroupCount: boardGroups.length,
                 ...groupCheck,
-            });
+            })}`);
 
             if (!groupCheck.allowed) {
                 console.log(
