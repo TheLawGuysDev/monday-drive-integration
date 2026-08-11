@@ -72,12 +72,16 @@ function collectFilesByColumn(item) {
 }
 
 /**
- * Fetches item name and files grouped by File column.
+ * Fetches item name, current group, and files grouped by File column.
  */
 async function getMondayItemData(itemId) {
     const query = `query {
         items (ids: [${itemId}]) {
             name
+            group {
+                id
+                title
+            }
             column_values {
                 id
                 text
@@ -112,8 +116,54 @@ async function getMondayItemData(itemId) {
 
     return {
         name: item.name,
+        group: item.group || null,
         fileColumns: collectFilesByColumn(item),
     };
+}
+
+/**
+ * Fetches board groups with position (top → bottom order).
+ */
+async function getBoardGroups(boardId) {
+    const query = `query {
+        boards (ids: [${boardId}]) {
+            groups {
+                id
+                title
+                position
+            }
+        }
+    }`;
+
+    const response = await axios.post(MONDAY_API_URL, { query }, { headers: mondayHeaders() });
+
+    if (response.data.errors?.length) {
+        throw new Error(response.data.errors.map((e) => e.message).join('; '));
+    }
+
+    return response.data.data?.boards?.[0]?.groups || [];
+}
+
+/**
+ * True when the item is in the target group or any group after it on the board.
+ */
+function isItemInOrAfterGroup(itemGroup, boardGroups, targetGroupTitle) {
+    if (!itemGroup?.id || !boardGroups?.length || !targetGroupTitle) return false;
+
+    const targetTitle = String(targetGroupTitle).trim().toLowerCase();
+    const target = boardGroups.find((g) => String(g.title || '').trim().toLowerCase() === targetTitle);
+    if (!target) return false;
+
+    const current = boardGroups.find((g) => String(g.id) === String(itemGroup.id));
+    if (!current) return false;
+
+    const targetPos = Number(target.position);
+    const currentPos = Number(current.position);
+    if (Number.isNaN(targetPos) || Number.isNaN(currentPos)) {
+        return String(current.id) === String(target.id);
+    }
+
+    return currentPos >= targetPos;
 }
 
 /**
@@ -248,6 +298,8 @@ async function getMondayUserById(userId) {
 
 module.exports = {
     getMondayItemData,
+    getBoardGroups,
+    isItemInOrAfterGroup,
     updateMondayFolderLink,
     clearMondayFileColumn,
     createMondayUpdate,

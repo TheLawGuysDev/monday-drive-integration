@@ -10,6 +10,9 @@ app.use(express.json());
 // --- CONSTANTS ---
 const LINK_COLUMN_ID = "link_mm0f3036";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
+const SYNC_FROM_GROUP_TITLE =
+    process.env.SYNC_FROM_GROUP_TITLE ||
+    "UPDATE BG SHEET - Client Auto Emailed 'Welcome Letter'";
 // Staging columns: upload to Drive, keep in Monday Files via update, then clear the column.
 const STAGING_UPLOAD_COLUMN_TITLES = new Set(
     (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
@@ -47,6 +50,23 @@ app.post('/webhook', async (req, res) => {
         try {
             const item = await mondayService.getMondayItemData(event.pulseId);
             if (!item) return res.status(200).send();
+
+            const boardGroups = await mondayService.getBoardGroups(event.boardId);
+            const allowedByGroup = mondayService.isItemInOrAfterGroup(
+                item.group,
+                boardGroups,
+                SYNC_FROM_GROUP_TITLE
+            );
+
+            if (!allowedByGroup) {
+                console.log(
+                    `[Skip] Item ${event.pulseId} is in group "${item.group?.title || 'unknown'}" ` +
+                    `(sync starts at "${SYNC_FROM_GROUP_TITLE}" or later)`
+                );
+                return res.status(200).send({ message: 'Skipped: before sync group' });
+            }
+
+            console.log(`[Group] OK — "${item.group?.title}"`);
 
             // Folder: "Client Name - pulseId" (rename in place if name changes)
             const { folderName } = mondayService.buildClientFolderName({
