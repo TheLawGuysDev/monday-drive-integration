@@ -43,9 +43,10 @@ app.post('/webhook', async (req, res) => {
         console.error('[Webhook] getMondayUserById:', err.message);
     }
 
-    if (['create_pulse', 'update_column_value', 'change_column_value'].includes(event.type)) {
-        // Delay to allow Monday's file processing to complete
-        await new Promise(r => setTimeout(r, 6000));
+    if (['create_pulse', 'update_column_value', 'change_column_value', 'move_pulse_into_group'].includes(event.type)) {
+        // Delay to allow Monday's file processing to complete (skip long wait on group moves)
+        const delayMs = event.type === 'move_pulse_into_group' ? 1000 : 6000;
+        await new Promise(r => setTimeout(r, delayMs));
 
         try {
             const item = await mondayService.getMondayItemData(event.pulseId);
