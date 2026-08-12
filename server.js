@@ -185,8 +185,23 @@ app.post('/webhook', async (req, res) => {
         console.error('[Webhook] getMondayUserById:', err.message);
     }
 
-    if (['create_pulse', 'update_column_value', 'change_column_value', 'move_pulse_into_group'].includes(event.type)) {
+    const SYNC_EVENT_TYPES = new Set([
+        'create_pulse',
+        'create_item',
+        'update_column_value',
+        'change_column_value',
+        'move_pulse_into_group',
+        'item_moved_to_any_group',
+        'item_moved_to_specific_group',
+    ]);
+
+    if (SYNC_EVENT_TYPES.has(event.type)) {
         await scheduleItemSync(event);
+    } else {
+        console.log(
+            `[Webhook] Ignored event type "${event.type}" — add it to SYNC_EVENT_TYPES if needed. ` +
+            `Keys: ${Object.keys(event).join(', ')}`
+        );
     }
 
     res.status(200).send({ message: 'OK' });
