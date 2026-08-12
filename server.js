@@ -12,7 +12,8 @@ const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
 const SYNC_FROM_GROUP_TITLE =
     process.env.SYNC_FROM_GROUP_TITLE ||
     "UPDATE BG SHEET - Client Auto Emailed 'Welcome Letter'";
-// Staging columns: upload to Drive, then clear the Monday column (no update re-attach).
+// Staging columns (CRM Uploads, LW Uploads): sync to Drive but keep files on Monday.
+// (Clearing caused a race with the clear webhook and removed them from Files.)
 const STAGING_UPLOAD_COLUMN_TITLES = new Set(
     (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
         .split(',')
@@ -110,9 +111,11 @@ app.post('/webhook', async (req, res) => {
                     continue;
                 }
 
-                console.log(`[Drive] Subfolder: ${column.columnTitle} (${column.files.length} file(s))${isStagingUpload ? ' [staging]' : ''}`);
+                console.log(`[Drive] Subfolder: ${column.columnTitle} (${column.files.length} file(s))${isStagingUpload ? ' [staging-keep]' : ''}`);
 
-                // Staging columns keep files in Drive even after the Monday column is cleared.
+                // Non-staging: remove Drive files no longer on Monday.
+                // Staging (CRM/LW Uploads): do NOT clear Monday and do NOT orphan-delete —
+                // clearing caused a race (clear webhook ate the next batch) and removed Files.
                 if (!isStagingUpload) {
                     await googleService.removeOrphanedFiles(
                         columnFolder.id,
@@ -120,37 +123,14 @@ app.post('/webhook', async (req, res) => {
                     );
                 }
 
-                if (isStagingUpload) {
-                    // Staging: sync only what's currently in this column, then clear it.
-                    // Do NOT re-attach to Updates (that created duplicate assets and re-uploaded old files).
-                    for (const file of column.files) {
-                        const fileStream = await mondayService.downloadMondayFile(file.url);
-                        await googleService.syncFileToDrive(
-                            file.name,
-                            fileStream.data,
-                            columnFolder.id,
-                            file.assetId
-                        );
-                    }
-
-                    await mondayService.clearMondayFileColumn(
-                        event.pulseId,
-                        event.boardId,
-                        column.columnId
+                for (const file of column.files) {
+                    const fileStream = await mondayService.downloadMondayFile(file.url);
+                    await googleService.syncFileToDrive(
+                        file.name,
+                        fileStream.data,
+                        columnFolder.id,
+                        file.assetId
                     );
-                    console.log(
-                        `[Monday] Cleared "${column.columnTitle}" after uploading ${column.files.length} file(s) to Drive`
-                    );
-                } else {
-                    for (const file of column.files) {
-                        const fileStream = await mondayService.downloadMondayFile(file.url);
-                        await googleService.syncFileToDrive(
-                            file.name,
-                            fileStream.data,
-                            columnFolder.id,
-                            file.assetId
-                        );
-                    }
                 }
             }
 
