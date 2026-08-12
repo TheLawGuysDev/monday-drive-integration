@@ -12,7 +12,8 @@ const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
 const SYNC_FROM_GROUP_TITLE =
     process.env.SYNC_FROM_GROUP_TITLE ||
     "UPDATE BG SHEET - Client Auto Emailed 'Welcome Letter'";
-// Staging columns (CRM Uploads, LW Uploads): sync to Drive but keep files on Monday.
+// Staging columns (CRM Uploads, LW Uploads): sync to Drive, then clear the Monday column.
+// Debounce prevents the clear-webhook from racing with the next upload batch.
 const STAGING_UPLOAD_COLUMN_TITLES = new Set(
     (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
         .split(',')
@@ -131,9 +132,11 @@ async function runItemSync(event) {
 
         console.log(
             `[Drive] Subfolder: ${column.columnTitle} (${column.files.length} file(s))` +
-            `${isStagingUpload ? ' [staging-keep]' : ''}`
+            `${isStagingUpload ? ' [staging]' : ''}`
         );
 
+        // Non-staging: remove Drive files no longer on Monday.
+        // Staging: keep Drive history (no orphan-delete); clear Monday column after upload.
         if (!isStagingUpload) {
             await googleService.removeOrphanedFiles(
                 columnFolder.id,
@@ -148,6 +151,17 @@ async function runItemSync(event) {
                 fileStream.data,
                 columnFolder.id,
                 file.assetId
+            );
+        }
+
+        if (isStagingUpload && column.files.length > 0) {
+            await mondayService.clearMondayFileColumn(
+                event.pulseId,
+                event.boardId || item.boardId,
+                column.columnId
+            );
+            console.log(
+                `[Monday] Cleared "${column.columnTitle}" after uploading ${column.files.length} file(s)`
             );
         }
     }
