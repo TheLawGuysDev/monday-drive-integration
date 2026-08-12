@@ -34,7 +34,10 @@ function isStagingUploadColumn(columnTitle) {
  */
 function scheduleItemSync(event) {
     const itemId = String(event.pulseId);
-    const delayMs = event.type === 'move_pulse_into_group' ? 1000 : 6000;
+    const delayMs =
+        event.type === 'move_pulse_into_group' || event.type === 'move_pulse_into_board'
+            ? 1000
+            : 6000;
 
     let state = debounceByItem.get(itemId);
     if (!state) {
@@ -191,6 +194,7 @@ app.post('/webhook', async (req, res) => {
         'update_column_value',
         'change_column_value',
         'move_pulse_into_group',
+        'move_pulse_into_board',
         'item_moved_to_any_group',
         'item_moved_to_specific_group',
     ]);
