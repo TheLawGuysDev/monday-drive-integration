@@ -86,24 +86,31 @@ async function getNextVersionedFileName(fileName, folderId) {
 
 /**
  * Finds a Drive file previously synced from a Monday asset id.
+ * Skip check only — if the query fails, return null so upload can proceed.
  */
 async function findFileByMondayAssetId(folderId, assetId) {
     if (!assetId) return null;
-    const response = await drive.files.list({
-        q: `'${folderId}' in parents and trashed = false and appProperties has { key='mondayAssetId' and value='${String(assetId).replace(/'/g, "\\'")}' }`,
-        fields: 'files(id, name)',
-        pageSize: 100,
-        corpora: 'allDrives',
-        includeItemsFromAllDrives: true,
-        supportsAllDrives: true,
-    });
-    return response.data.files?.[0] || null;
+    try {
+        const response = await drive.files.list({
+            q: `'${folderId}' in parents and trashed = false and appProperties has { key='mondayAssetId' and value='${String(assetId).replace(/'/g, "\\'")}' }`,
+            fields: 'files(id, name)',
+            pageSize: 10,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+        });
+        return response.data.files?.[0] || null;
+    } catch (err) {
+        console.warn(`[Drive] asset lookup failed (${assetId}): ${err.message}`);
+        return null;
+    }
 }
 
 /**
  * Uploads a file without overwriting. Same Monday asset → skip.
  * Same filename / new asset → creates file (2), file (3), etc.
  * Applies to ALL file columns (BG Sheet, etc.) — not only staging columns.
+ *
+ * Dedup is by Monday assetId stored in Drive appProperties — NOT by file content.
  */
 async function syncFileToDrive(fileName, fileStream, folderId, assetId = null) {
     if (assetId) {
@@ -238,15 +245,19 @@ async function deleteFileFromDrive(fileId) {
  * Lists non-folder files in a Drive folder.
  */
 async function listFilesInFolder(folderId) {
-    const response = await drive.files.list({
-        q: `'${folderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
-        fields: 'files(id, name)',
-        pageSize: 1000,
-        corpora: 'allDrives',
-        includeItemsFromAllDrives: true,
-        supportsAllDrives: true,
-    });
-    return response.data.files || [];
+    try {
+        const response = await drive.files.list({
+            q: `'${folderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+            fields: 'files(id, name)',
+            pageSize: 1000,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+        });
+        return response.data.files || [];
+    } catch (err) {
+        console.warn(`[Drive] listFilesInFolder failed: ${err.message}`);
+        return [];
+    }
 }
 
 /**
