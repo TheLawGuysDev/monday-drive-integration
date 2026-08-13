@@ -267,6 +267,67 @@ async function clearMondayFileColumn(itemId, boardId, columnId) {
 }
 
 /**
+ * Resolves a File column id by title on a board (case-insensitive).
+ */
+async function findFileColumnIdByTitle(boardId, columnTitle) {
+    const wanted = String(columnTitle || '').trim().toLowerCase();
+    if (!boardId || !wanted) return null;
+
+    const query = `query {
+        boards (ids: [${boardId}]) {
+            columns {
+                id
+                title
+                type
+            }
+        }
+    }`;
+
+    const response = await axios.post(MONDAY_API_URL, { query }, { headers: mondayHeaders() });
+    if (response.data.errors?.length) {
+        throw new Error(response.data.errors.map((e) => e.message).join('; '));
+    }
+
+    const columns = response.data.data?.boards?.[0]?.columns || [];
+    const match = columns.find(
+        (col) =>
+            String(col.title || '').trim().toLowerCase() === wanted &&
+            String(col.type || '').toLowerCase() === 'file'
+    );
+    return match?.id || null;
+}
+
+/**
+ * Uploads a file into a Monday File column (appends; does not replace existing files).
+ */
+async function addFileToMondayColumn(itemId, columnId, fileName, fileBuffer) {
+    const FormData = require('form-data');
+    const form = new FormData();
+    const query = `mutation ($file: File!) {
+        add_file_to_column (item_id: ${itemId}, column_id: "${columnId}", file: $file) { id }
+    }`;
+
+    form.append('query', query);
+    form.append('map', JSON.stringify({ file: 'variables.file' }));
+    form.append('file', fileBuffer, { filename: fileName });
+
+    const response = await axios.post('https://api.monday.com/v2/file', form, {
+        headers: {
+            ...mondayHeaders(),
+            ...form.getHeaders(),
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+    });
+
+    if (response.data.errors?.length) {
+        throw new Error(response.data.errors.map((e) => e.message).join('; '));
+    }
+
+    return response.data.data?.add_file_to_column;
+}
+
+/**
  * Creates an item update (used to keep files visible in Monday Files after clearing a column).
  */
 async function createMondayUpdate(itemId, body) {
@@ -361,6 +422,8 @@ module.exports = {
     isItemInOrAfterGroup,
     updateMondayFolderLink,
     clearMondayFileColumn,
+    findFileColumnIdByTitle,
+    addFileToMondayColumn,
     createMondayUpdate,
     addFileToMondayUpdate,
     downloadMondayFile,

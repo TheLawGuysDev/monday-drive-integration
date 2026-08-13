@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const { Readable } = require('stream');
 const mondayService = require('./mondayService');
 const googleService = require('./googleService');
 
@@ -12,20 +13,47 @@ const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
 const SYNC_FROM_GROUP_TITLE =
     process.env.SYNC_FROM_GROUP_TITLE ||
     "UPDATE BG SHEET - Client Auto Emailed 'Welcome Letter'";
-// Staging columns (CRM Uploads, LW Uploads): sync to Drive, then clear the Monday column.
-// Debounce prevents the clear-webhook from racing with the next upload batch.
+// Staging columns (CRM Uploads, LW Uploads): sync to Drive, move to Archive Uploads, then clear.
 const STAGING_UPLOAD_COLUMN_TITLES = new Set(
     (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
         .split(',')
         .map((title) => title.trim().toLowerCase())
         .filter(Boolean)
 );
+const ARCHIVE_UPLOAD_COLUMN_TITLE = (
+    process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archive Uploads'
+).trim();
 
 /** @type {Map<string, { timer: NodeJS.Timeout, waiters: Function[], latestEvent: object }>} */
 const debounceByItem = new Map();
 
+/** @type {Map<string, string>} boardId → Archive Uploads column id */
+const archiveColumnIdByBoard = new Map();
+
 function isStagingUploadColumn(columnTitle) {
     return STAGING_UPLOAD_COLUMN_TITLES.has(String(columnTitle || '').trim().toLowerCase());
+}
+
+function isArchiveUploadColumn(columnTitle) {
+    return (
+        String(columnTitle || '').trim().toLowerCase() ===
+        ARCHIVE_UPLOAD_COLUMN_TITLE.toLowerCase()
+    );
+}
+
+async function resolveArchiveColumnId(boardId) {
+    const key = String(boardId);
+    if (archiveColumnIdByBoard.has(key)) {
+        return archiveColumnIdByBoard.get(key);
+    }
+    const columnId = await mondayService.findFileColumnIdByTitle(
+        boardId,
+        ARCHIVE_UPLOAD_COLUMN_TITLE
+    );
+    if (columnId) {
+        archiveColumnIdByBoard.set(key, columnId);
+    }
+    return columnId;
 }
 
 /**
@@ -126,6 +154,12 @@ async function runItemSync(event) {
     console.log(`[Sync] ${totalFiles} file(s) across ${item.fileColumns.length} column folder(s)`);
 
     for (const column of item.fileColumns) {
+        // Monday archive only — already synced via CRM/LW Uploads; skip to avoid Drive dupes.
+        if (isArchiveUploadColumn(column.columnTitle)) {
+            console.log(`[Skip] "${column.columnTitle}" is Monday archive (not synced to Drive)`);
+            continue;
+        }
+
         const isStagingUpload = isStagingUploadColumn(column.columnTitle);
         const columnFolder = await googleService.findOrCreateFolder(column.columnTitle, rootFolder.id);
         if (!columnFolder) {
@@ -138,34 +172,58 @@ async function runItemSync(event) {
             `${isStagingUpload ? ' [staging]' : ''}`
         );
 
-        // Non-staging: remove Drive files no longer on Monday.
-        // Staging: keep Drive history (no orphan-delete); clear Monday column after upload.
-        if (!isStagingUpload) {
-            await googleService.removeOrphanedFiles(
-                columnFolder.id,
-                column.files.map((file) => file.name)
-            );
-        }
-
+        // Drive is append-only for every file column: create versions, never overwrite/delete.
+        let archivedOk = true;
         for (const file of column.files) {
-            const fileStream = await mondayService.downloadMondayFile(file.url);
+            const fileBuffer = await mondayService.downloadMondayFileBuffer(file.url);
             await googleService.syncFileToDrive(
                 file.name,
-                fileStream.data,
+                Readable.from(fileBuffer),
                 columnFolder.id,
                 file.assetId
             );
+
+            if (isStagingUpload) {
+                const archiveColumnId = await resolveArchiveColumnId(boardId);
+                if (!archiveColumnId) {
+                    console.error(
+                        `[Monday] Column "${ARCHIVE_UPLOAD_COLUMN_TITLE}" not found on board ${boardId}`
+                    );
+                    archivedOk = false;
+                } else {
+                    try {
+                        await mondayService.addFileToMondayColumn(
+                            event.pulseId,
+                            archiveColumnId,
+                            file.name,
+                            fileBuffer
+                        );
+                        console.log(
+                            `[Monday] Archived "${file.name}" → "${ARCHIVE_UPLOAD_COLUMN_TITLE}"`
+                        );
+                    } catch (err) {
+                        archivedOk = false;
+                        console.error(`[Monday] Archive failed for "${file.name}": ${err.message}`);
+                    }
+                }
+            }
         }
 
         if (isStagingUpload && column.files.length > 0) {
-            await mondayService.clearMondayFileColumn(
-                event.pulseId,
-                event.boardId || item.boardId,
-                column.columnId
-            );
-            console.log(
-                `[Monday] Cleared "${column.columnTitle}" after uploading ${column.files.length} file(s)`
-            );
+            if (!archivedOk) {
+                console.error(
+                    `[Monday] Skipping clear of "${column.columnTitle}" — archive incomplete`
+                );
+            } else {
+                await mondayService.clearMondayFileColumn(
+                    event.pulseId,
+                    boardId,
+                    column.columnId
+                );
+                console.log(
+                    `[Monday] Cleared "${column.columnTitle}" after archive (${column.files.length} file(s))`
+                );
+            }
         }
     }
 }

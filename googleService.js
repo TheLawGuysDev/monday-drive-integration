@@ -12,20 +12,6 @@ oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
 const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
 /**
- * Finds a file by name in a specific folder.
- */
-async function findFileInFolder(fileName, folderId) {
-    const query = `name = '${fileName.replace(/'/g, "\\'")}' and '${folderId}' in parents and trashed = false`;
-    const response = await drive.files.list({
-        q: query,
-        fields: 'files(id, name)',
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true,
-    });
-    return response.data.files || [];
-}
-
-/**
  * Parses "report.pdf" / "report (2).pdf" into stem, version, and extension.
  */
 function parseVersionedName(fileName) {
@@ -43,11 +29,6 @@ function parseVersionedName(fileName) {
 function buildVersionedName(stem, version, ext) {
     if (version <= 1) return `${stem}${ext}`;
     return `${stem} (${version})${ext}`;
-}
-
-function fileBaseKey(fileName) {
-    const { stem, ext } = parseVersionedName(fileName);
-    return `${stem.toLowerCase()}|${ext.toLowerCase()}`;
 }
 
 /**
@@ -232,17 +213,7 @@ async function findOrRenameClientFolder(desiredFolderName, pulseId, parentId) {
 }
 
 /**
- * Permanently deletes a file from Drive.
- */
-async function deleteFileFromDrive(fileId) {
-    await drive.files.delete({
-        fileId,
-        supportsAllDrives: true,
-    });
-}
-
-/**
- * Lists non-folder files in a Drive folder.
+ * Lists non-folder files in a Drive folder (used for version naming only).
  */
 async function listFilesInFolder(folderId) {
     try {
@@ -260,24 +231,8 @@ async function listFilesInFolder(folderId) {
     }
 }
 
-/**
- * Removes Drive files whose base name is no longer present in Monday.
- * Keeps version siblings: if Monday has "report.pdf", keeps "report (2).pdf" too.
- */
-async function removeOrphanedFiles(folderId, mondayFileNames) {
-    const driveFiles = await listFilesInFolder(folderId);
-    const keepBases = new Set(mondayFileNames.map(fileBaseKey));
-
-    for (const driveFile of driveFiles) {
-        if (keepBases.has(fileBaseKey(driveFile.name))) continue;
-        console.log(`[Delete] Removing ${driveFile.name} from Drive`);
-        await deleteFileFromDrive(driveFile.id);
-    }
-}
-
 module.exports = {
     findOrCreateFolder,
     findOrRenameClientFolder,
     syncFileToDrive,
-    removeOrphanedFiles,
 };
