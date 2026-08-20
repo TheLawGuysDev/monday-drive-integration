@@ -92,6 +92,7 @@ async function getMondayItemData(itemId) {
             name
             board {
                 id
+                name
             }
             group {
                 id
@@ -132,6 +133,7 @@ async function getMondayItemData(itemId) {
     return {
         name: item.name,
         boardId: item.board?.id || null,
+        boardName: item.board?.name || null,
         group: item.group || null,
         fileColumns: collectFilesByColumn(item),
     };
@@ -420,6 +422,7 @@ module.exports = {
     getMondayItemData,
     getBoardGroups,
     isItemInOrAfterGroup,
+    normalizeGroupTitle,
     updateMondayFolderLink,
     clearMondayFileColumn,
     findFileColumnIdByTitle,

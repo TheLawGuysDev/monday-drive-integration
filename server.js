@@ -13,9 +13,16 @@ const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
 const SYNC_FROM_GROUP_TITLE =
     process.env.SYNC_FROM_GROUP_TITLE ||
     "UPDATE BG SHEET - Client Auto Emailed 'Welcome Letter'";
-// Staging columns (CRM Uploads, LW Uploads): sync to Drive, move to Archive Uploads, then clear.
+// Only these boards enforce SYNC_FROM_GROUP_TITLE; all others sync from any group.
+const GROUP_FILTER_BOARD_IDS = new Set(
+    (process.env.GROUP_FILTER_BOARD_IDS || process.env.BOARD_ID || '')
+        .split(',')
+        .map((id) => String(id).trim())
+        .filter(Boolean)
+);
+// Staging columns: sync to Drive, move to Archive Uploads, then clear.
 const STAGING_UPLOAD_COLUMN_TITLES = new Set(
-    (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
+    (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads,Archives')
         .split(',')
         .map((title) => title.trim().toLowerCase())
         .filter(Boolean)
@@ -23,6 +30,27 @@ const STAGING_UPLOAD_COLUMN_TITLES = new Set(
 const ARCHIVE_UPLOAD_COLUMN_TITLE = (
     process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archive Uploads'
 ).trim();
+// Stannp Files: if item is in a listed FU group, nest under Stannp Files/{STANNP_FU_FOLDER_NAME}.
+// All FU stages (1FU, 2FU, …) share one Drive subfolder — not one folder per group.
+const STANNP_FILES_COLUMN_TITLE = (
+    process.env.STANNP_FILES_COLUMN_TITLE || 'Stannp Files'
+).trim();
+const STANNP_FU_FOLDER_NAME = (process.env.STANNP_FU_FOLDER_NAME || 'FU').trim() || 'FU';
+const STANNP_FU_GROUP_TITLES = new Set(
+    (process.env.STANNP_FU_GROUP_TITLES ||
+        process.env.STANNP_GROUP_SUBFOLDER_TITLES ||
+        '1FU Sent|2FU Sent - Auto Email Sent')
+        .split('|')
+        .map((title) => mondayService.normalizeGroupTitle(title))
+        .filter(Boolean)
+);
+// Columns that nest files under {column}/{board name} (e.g. LW Uploads, Archives)
+const BOARD_NESTED_COLUMN_TITLES = new Set(
+    (process.env.BOARD_NESTED_COLUMNS || 'LW Uploads')
+        .split(',')
+        .map((title) => title.trim().toLowerCase())
+        .filter(Boolean)
+);
 
 /** @type {Map<string, { timer: NodeJS.Timeout, waiters: Function[], latestEvent: object }>} */
 const debounceByItem = new Map();
@@ -39,6 +67,57 @@ function isArchiveUploadColumn(columnTitle) {
         String(columnTitle || '').trim().toLowerCase() ===
         ARCHIVE_UPLOAD_COLUMN_TITLE.toLowerCase()
     );
+}
+
+function isStannpFilesColumn(columnTitle) {
+    return (
+        String(columnTitle || '').trim().toLowerCase() ===
+        STANNP_FILES_COLUMN_TITLE.toLowerCase()
+    );
+}
+
+function isBoardNestedColumn(columnTitle) {
+    return BOARD_NESTED_COLUMN_TITLES.has(String(columnTitle || '').trim().toLowerCase());
+}
+
+/**
+ * Special Drive nesting:
+ * - Stannp Files in FU groups → Stannp Files/FU (single shared folder)
+ * - LW Uploads → LW Uploads/{board name}
+ * - Otherwise → column folder root
+ */
+async function resolveColumnUploadFolder(columnTitle, columnFolder, { itemGroup, boardName } = {}) {
+    if (isBoardNestedColumn(columnTitle)) {
+        const name = String(boardName || '').trim() || 'Unknown Board';
+        const boardFolder = await googleService.findOrCreateFolder(name, columnFolder.id);
+        if (!boardFolder) {
+            console.error(`[Drive] Could not create board folder under "${columnTitle}": ${name}`);
+            return columnFolder;
+        }
+        console.log(`[Drive] ${columnTitle} → "${name}"`);
+        return boardFolder;
+    }
+
+    if (!isStannpFilesColumn(columnTitle)) return columnFolder;
+
+    const groupTitle = itemGroup?.title;
+    if (!groupTitle) return columnFolder;
+
+    const groupNorm = mondayService.normalizeGroupTitle(groupTitle);
+    if (!STANNP_FU_GROUP_TITLES.has(groupNorm)) {
+        console.log(
+            `[Drive] Stannp Files: group "${groupTitle}" not in FU list — upload to column root`
+        );
+        return columnFolder;
+    }
+
+    const fuFolder = await googleService.findOrCreateFolder(STANNP_FU_FOLDER_NAME, columnFolder.id);
+    if (!fuFolder) {
+        console.error(`[Drive] Could not create Stannp folder: ${STANNP_FU_FOLDER_NAME}`);
+        return columnFolder;
+    }
+    console.log(`[Drive] Stannp Files → "${STANNP_FU_FOLDER_NAME}" (group "${groupTitle}")`);
+    return fuFolder;
 }
 
 async function resolveArchiveColumnId(boardId) {
@@ -94,36 +173,47 @@ function scheduleItemSync(event) {
     });
 }
 
+function boardRequiresGroupFilter(boardId) {
+    return GROUP_FILTER_BOARD_IDS.has(String(boardId));
+}
+
 async function runItemSync(event) {
     const item = await mondayService.getMondayItemData(event.pulseId);
     if (!item) return;
 
     const boardId = event.boardId || item.boardId;
-    const boardGroups = await mondayService.getBoardGroups(boardId);
-    const groupCheck = mondayService.isItemInOrAfterGroup(
-        item.group,
-        boardGroups,
-        SYNC_FROM_GROUP_TITLE
-    );
 
-    console.log(`[GroupCheck] ${JSON.stringify({
-        eventBoardId: event.boardId,
-        itemBoardId: item.boardId,
-        boardIdUsed: boardId,
-        itemGroup: item.group,
-        syncFrom: SYNC_FROM_GROUP_TITLE,
-        boardGroupCount: boardGroups.length,
-        ...groupCheck,
-    })}`);
-
-    if (!groupCheck.allowed) {
-        console.log(
-            `[Skip] Item ${event.pulseId} blocked by group filter (${groupCheck.reason})`
+    if (boardRequiresGroupFilter(boardId)) {
+        const boardGroups = await mondayService.getBoardGroups(boardId);
+        const groupCheck = mondayService.isItemInOrAfterGroup(
+            item.group,
+            boardGroups,
+            SYNC_FROM_GROUP_TITLE
         );
-        return;
-    }
 
-    console.log(`[Group] OK — "${groupCheck.itemGroupTitle}"`);
+        console.log(`[GroupCheck] ${JSON.stringify({
+            eventBoardId: event.boardId,
+            itemBoardId: item.boardId,
+            boardIdUsed: boardId,
+            itemGroup: item.group,
+            syncFrom: SYNC_FROM_GROUP_TITLE,
+            boardGroupCount: boardGroups.length,
+            ...groupCheck,
+        })}`);
+
+        if (!groupCheck.allowed) {
+            console.log(
+                `[Skip] Item ${event.pulseId} blocked by group filter (${groupCheck.reason})`
+            );
+            return;
+        }
+
+        console.log(`[Group] OK — "${groupCheck.itemGroupTitle}"`);
+    } else {
+        console.log(
+            `[Group] Skipped filter for board ${boardId} (not in GROUP_FILTER_BOARD_IDS)`
+        );
+    }
 
     const { folderName } = mondayService.buildClientFolderName({
         name: item.name,
@@ -167,8 +257,16 @@ async function runItemSync(event) {
             continue;
         }
 
+        const uploadFolder = await resolveColumnUploadFolder(
+            column.columnTitle,
+            columnFolder,
+            { itemGroup: item.group, boardName: item.boardName }
+        );
+
         console.log(
-            `[Drive] Subfolder: ${column.columnTitle} (${column.files.length} file(s))` +
+            `[Drive] Subfolder: ${column.columnTitle}` +
+            `${uploadFolder.id !== columnFolder.id ? ` / ${uploadFolder.name}` : ''}` +
+            ` (${column.files.length} file(s))` +
             `${isStagingUpload ? ' [staging]' : ''}`
         );
 
@@ -179,7 +277,7 @@ async function runItemSync(event) {
             await googleService.syncFileToDrive(
                 file.name,
                 Readable.from(fileBuffer),
-                columnFolder.id,
+                uploadFolder.id,
                 file.assetId
             );
 
