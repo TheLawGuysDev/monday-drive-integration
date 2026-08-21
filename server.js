@@ -31,14 +31,15 @@ const ARCHIVE_UPLOAD_COLUMN_TITLE = (
     process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archive Uploads'
 ).trim();
 // Stannp Files nesting by board (always, any group):
-//   MJ boards → Stannp Files/DL Stannp
-//   Valerie boards → Stannp Files/FU
-// Fallback for unmapped boards: FU groups → FU folder; else column root.
+//   MJ boards → Stannp Files/{STANNP_DL_FOLDER_NAME}
+//   Valerie boards → Stannp Files/{STANNP_FU_FOLDER_NAME}
+// Map values "DL" / "DL Stannp" / "{DL}" resolve to STANNP_DL_FOLDER_NAME;
+// "FU" / "{FU}" resolve to STANNP_FU_FOLDER_NAME.
 const STANNP_FILES_COLUMN_TITLE = (
     process.env.STANNP_FILES_COLUMN_TITLE || 'Stannp Files'
 ).trim();
 const STANNP_FU_FOLDER_NAME = (process.env.STANNP_FU_FOLDER_NAME || 'FU').trim() || 'FU';
-const STANNP_DL_FOLDER_NAME = (process.env.STANNP_DL_FOLDER_NAME || 'DL Stannp').trim() || 'DL Stannp';
+const STANNP_DL_FOLDER_NAME = (process.env.STANNP_DL_FOLDER_NAME || 'DL').trim() || 'DL';
 const STANNP_FU_GROUP_TITLES = new Set(
     (process.env.STANNP_FU_GROUP_TITLES ||
         process.env.STANNP_GROUP_SUBFOLDER_TITLES ||
@@ -47,17 +48,26 @@ const STANNP_FU_GROUP_TITLES = new Set(
         .map((title) => mondayService.normalizeGroupTitle(title))
         .filter(Boolean)
 );
+
+function resolveStannpMapFolderValue(rawFolder) {
+    const value = String(rawFolder || '').trim();
+    const key = value.replace(/^\{|\}$/g, '').trim().toLowerCase();
+    if (key === 'dl' || key === 'dl stannp') return STANNP_DL_FOLDER_NAME;
+    if (key === 'fu') return STANNP_FU_FOLDER_NAME;
+    return value;
+}
+
 /** @type {Map<string, string>} normalized board name → Drive subfolder under Stannp Files */
 const STANNP_BOARD_FOLDER_BY_NAME = (() => {
     const map = new Map();
     const raw =
         process.env.STANNP_BOARD_FOLDER_MAP ||
         [
-            `MJ TEST BOARD:${STANNP_DL_FOLDER_NAME}`,
-            `MJ Board for Testing:${STANNP_DL_FOLDER_NAME}`,
-            `Demand Letters - MJ:${STANNP_DL_FOLDER_NAME}`,
-            `VALERIE TESTING BOARD:${STANNP_FU_FOLDER_NAME}`,
-            `Valerie - 100% NEW AUTOMATIONS:${STANNP_FU_FOLDER_NAME}`,
+            'MJ TEST BOARD:DL',
+            'MJ Board for Testing:DL',
+            'Demand Letters - MJ:DL',
+            'VALERIE TESTING BOARD:FU',
+            'Valerie - 100% NEW AUTOMATIONS:FU',
         ].join('|');
     for (const entry of raw.split('|')) {
         const trimmed = entry.trim();
@@ -65,7 +75,7 @@ const STANNP_BOARD_FOLDER_BY_NAME = (() => {
         const colon = trimmed.indexOf(':');
         if (colon <= 0) continue;
         const boardKey = mondayService.normalizeGroupTitle(trimmed.slice(0, colon));
-        const folderName = trimmed.slice(colon + 1).trim();
+        const folderName = resolveStannpMapFolderValue(trimmed.slice(colon + 1));
         if (boardKey && folderName) map.set(boardKey, folderName);
     }
     return map;
