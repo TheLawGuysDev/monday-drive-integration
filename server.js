@@ -80,13 +80,37 @@ const STANNP_BOARD_FOLDER_BY_NAME = (() => {
     }
     return map;
 })();
-// Columns that nest files under {column}/{board name} (e.g. LW Uploads, Archives)
+// Columns that nest files under {column}/{board name} (LW Uploads, CRM Uploads)
 const BOARD_NESTED_COLUMN_TITLES = new Set(
-    (process.env.BOARD_NESTED_COLUMNS || 'LW Uploads')
+    (process.env.BOARD_NESTED_COLUMNS || 'LW Uploads,CRM Uploads')
         .split(',')
         .map((title) => title.trim().toLowerCase())
         .filter(Boolean)
 );
+// Monday column title → Drive folder name (avoid duplicate FU* folders)
+/** @type {Map<string, string>} lowercased monday title → Drive folder title */
+const COLUMN_DRIVE_FOLDER_ALIASES = (() => {
+    const map = new Map();
+    const raw =
+        process.env.COLUMN_DRIVE_FOLDER_ALIASES ||
+        'FU Address Sheet:Address Sheet|FU Demand Letter:Demand Letter';
+    for (const entry of raw.split('|')) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        const colon = trimmed.indexOf(':');
+        if (colon <= 0) continue;
+        const from = trimmed.slice(0, colon).trim().toLowerCase();
+        const to = trimmed.slice(colon + 1).trim();
+        if (from && to) map.set(from, to);
+    }
+    return map;
+})();
+
+function resolveDriveColumnFolderName(columnTitle) {
+    const title = String(columnTitle || '').trim();
+    if (!title) return title;
+    return COLUMN_DRIVE_FOLDER_ALIASES.get(title.toLowerCase()) || title;
+}
 
 /** @type {Map<string, { timer: NodeJS.Timeout, waiters: Function[], latestEvent: object }>} */
 const debounceByItem = new Map();
@@ -134,8 +158,8 @@ function resolveStannpSubfolderName(boardName, itemGroup) {
 
 /**
  * Special Drive nesting:
- * - Stannp Files: board map (MJ→DL Stannp, Valerie→FU always) or FU-group fallback
- * - LW Uploads → LW Uploads/{board name}
+ * - Stannp Files: board map (MJ→DL, Valerie→FU always) or FU-group fallback
+ * - LW Uploads / CRM Uploads → {column}/{board name}
  * - Otherwise → column folder root
  */
 async function resolveColumnUploadFolder(columnTitle, columnFolder, { itemGroup, boardName } = {}) {
@@ -303,20 +327,24 @@ async function runItemSync(event) {
         }
 
         const isStagingUpload = isStagingUploadColumn(column.columnTitle);
-        const columnFolder = await googleService.findOrCreateFolder(column.columnTitle, rootFolder.id);
+        const driveFolderName = resolveDriveColumnFolderName(column.columnTitle);
+        if (driveFolderName !== column.columnTitle) {
+            console.log(`[Drive] Alias "${column.columnTitle}" → folder "${driveFolderName}"`);
+        }
+        const columnFolder = await googleService.findOrCreateFolder(driveFolderName, rootFolder.id);
         if (!columnFolder) {
-            console.error(`[Critical Error] Could not create/find column folder: ${column.columnTitle}`);
+            console.error(`[Critical Error] Could not create/find column folder: ${driveFolderName}`);
             continue;
         }
 
         const uploadFolder = await resolveColumnUploadFolder(
-            column.columnTitle,
+            driveFolderName,
             columnFolder,
             { itemGroup: item.group, boardName: item.boardName }
         );
 
         console.log(
-            `[Drive] Subfolder: ${column.columnTitle}` +
+            `[Drive] Subfolder: ${driveFolderName}` +
             `${uploadFolder.id !== columnFolder.id ? ` / ${uploadFolder.name}` : ''}` +
             ` (${column.files.length} file(s))` +
             `${isStagingUpload ? ' [staging]' : ''}`
