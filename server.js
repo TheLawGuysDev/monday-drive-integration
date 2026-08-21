@@ -30,12 +30,15 @@ const STAGING_UPLOAD_COLUMN_TITLES = new Set(
 const ARCHIVE_UPLOAD_COLUMN_TITLE = (
     process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archive Uploads'
 ).trim();
-// Stannp Files: if item is in a listed FU group, nest under Stannp Files/{STANNP_FU_FOLDER_NAME}.
-// All FU stages (1FU, 2FU, …) share one Drive subfolder — not one folder per group.
+// Stannp Files nesting by board (always, any group):
+//   MJ boards → Stannp Files/DL Stannp
+//   Valerie boards → Stannp Files/FU
+// Fallback for unmapped boards: FU groups → FU folder; else column root.
 const STANNP_FILES_COLUMN_TITLE = (
     process.env.STANNP_FILES_COLUMN_TITLE || 'Stannp Files'
 ).trim();
 const STANNP_FU_FOLDER_NAME = (process.env.STANNP_FU_FOLDER_NAME || 'FU').trim() || 'FU';
+const STANNP_DL_FOLDER_NAME = (process.env.STANNP_DL_FOLDER_NAME || 'DL Stannp').trim() || 'DL Stannp';
 const STANNP_FU_GROUP_TITLES = new Set(
     (process.env.STANNP_FU_GROUP_TITLES ||
         process.env.STANNP_GROUP_SUBFOLDER_TITLES ||
@@ -44,6 +47,29 @@ const STANNP_FU_GROUP_TITLES = new Set(
         .map((title) => mondayService.normalizeGroupTitle(title))
         .filter(Boolean)
 );
+/** @type {Map<string, string>} normalized board name → Drive subfolder under Stannp Files */
+const STANNP_BOARD_FOLDER_BY_NAME = (() => {
+    const map = new Map();
+    const raw =
+        process.env.STANNP_BOARD_FOLDER_MAP ||
+        [
+            `MJ TEST BOARD:${STANNP_DL_FOLDER_NAME}`,
+            `MJ Board for Testing:${STANNP_DL_FOLDER_NAME}`,
+            `Demand Letters - MJ:${STANNP_DL_FOLDER_NAME}`,
+            `VALERIE TESTING BOARD:${STANNP_FU_FOLDER_NAME}`,
+            `Valerie - 100% NEW AUTOMATIONS:${STANNP_FU_FOLDER_NAME}`,
+        ].join('|');
+    for (const entry of raw.split('|')) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        const colon = trimmed.indexOf(':');
+        if (colon <= 0) continue;
+        const boardKey = mondayService.normalizeGroupTitle(trimmed.slice(0, colon));
+        const folderName = trimmed.slice(colon + 1).trim();
+        if (boardKey && folderName) map.set(boardKey, folderName);
+    }
+    return map;
+})();
 // Columns that nest files under {column}/{board name} (e.g. LW Uploads, Archives)
 const BOARD_NESTED_COLUMN_TITLES = new Set(
     (process.env.BOARD_NESTED_COLUMNS || 'LW Uploads')
@@ -80,9 +106,25 @@ function isBoardNestedColumn(columnTitle) {
     return BOARD_NESTED_COLUMN_TITLES.has(String(columnTitle || '').trim().toLowerCase());
 }
 
+function resolveStannpSubfolderName(boardName, itemGroup) {
+    const boardKey = mondayService.normalizeGroupTitle(boardName);
+    if (boardKey && STANNP_BOARD_FOLDER_BY_NAME.has(boardKey)) {
+        return STANNP_BOARD_FOLDER_BY_NAME.get(boardKey);
+    }
+
+    const groupTitle = itemGroup?.title;
+    if (!groupTitle) return null;
+
+    const groupNorm = mondayService.normalizeGroupTitle(groupTitle);
+    if (STANNP_FU_GROUP_TITLES.has(groupNorm)) {
+        return STANNP_FU_FOLDER_NAME;
+    }
+    return null;
+}
+
 /**
  * Special Drive nesting:
- * - Stannp Files in FU groups → Stannp Files/FU (single shared folder)
+ * - Stannp Files: board map (MJ→DL Stannp, Valerie→FU always) or FU-group fallback
  * - LW Uploads → LW Uploads/{board name}
  * - Otherwise → column folder root
  */
@@ -100,24 +142,24 @@ async function resolveColumnUploadFolder(columnTitle, columnFolder, { itemGroup,
 
     if (!isStannpFilesColumn(columnTitle)) return columnFolder;
 
-    const groupTitle = itemGroup?.title;
-    if (!groupTitle) return columnFolder;
-
-    const groupNorm = mondayService.normalizeGroupTitle(groupTitle);
-    if (!STANNP_FU_GROUP_TITLES.has(groupNorm)) {
+    const subfolderName = resolveStannpSubfolderName(boardName, itemGroup);
+    if (!subfolderName) {
         console.log(
-            `[Drive] Stannp Files: group "${groupTitle}" not in FU list — upload to column root`
+            `[Drive] Stannp Files: board "${boardName || '?'}" / group "${itemGroup?.title || '?'}"` +
+            ` — upload to column root`
         );
         return columnFolder;
     }
 
-    const fuFolder = await googleService.findOrCreateFolder(STANNP_FU_FOLDER_NAME, columnFolder.id);
-    if (!fuFolder) {
-        console.error(`[Drive] Could not create Stannp folder: ${STANNP_FU_FOLDER_NAME}`);
+    const nested = await googleService.findOrCreateFolder(subfolderName, columnFolder.id);
+    if (!nested) {
+        console.error(`[Drive] Could not create Stannp folder: ${subfolderName}`);
         return columnFolder;
     }
-    console.log(`[Drive] Stannp Files → "${STANNP_FU_FOLDER_NAME}" (group "${groupTitle}")`);
-    return fuFolder;
+    console.log(
+        `[Drive] Stannp Files → "${subfolderName}" (board "${boardName || '?'}", group "${itemGroup?.title || '?'}")`
+    );
+    return nested;
 }
 
 async function resolveArchiveColumnId(boardId) {
