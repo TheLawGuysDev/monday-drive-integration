@@ -20,15 +20,16 @@ const GROUP_FILTER_BOARD_IDS = new Set(
         .map((id) => String(id).trim())
         .filter(Boolean)
 );
-// Staging columns: sync to Drive, move to Archive Uploads, then clear.
+// Staging columns: sync to Drive, move to Archives, then clear.
 const STAGING_UPLOAD_COLUMN_TITLES = new Set(
-    (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads,Archives')
+    (process.env.STAGING_UPLOAD_COLUMNS || 'CRM Uploads,LW Uploads')
         .split(',')
         .map((title) => title.trim().toLowerCase())
         .filter(Boolean)
 );
+// Destination File column on Monday (not synced to Drive).
 const ARCHIVE_UPLOAD_COLUMN_TITLE = (
-    process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archive Uploads'
+    process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archives'
 ).trim();
 // Stannp Files nesting by board (always, any group):
 //   MJ boards → Stannp Files/{STANNP_DL_FOLDER_NAME}
@@ -115,7 +116,7 @@ function resolveDriveColumnFolderName(columnTitle) {
 /** @type {Map<string, { timer: NodeJS.Timeout, waiters: Function[], latestEvent: object }>} */
 const debounceByItem = new Map();
 
-/** @type {Map<string, string>} boardId → Archive Uploads column id */
+/** @type {Map<string, string>} boardId → Archives column id */
 const archiveColumnIdByBoard = new Map();
 
 function isStagingUploadColumn(columnTitle) {
