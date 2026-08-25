@@ -93,6 +93,11 @@ async function getMondayItemData(itemId) {
             board {
                 id
                 name
+                columns {
+                    id
+                    title
+                    type
+                }
             }
             group {
                 id
@@ -130,13 +135,33 @@ async function getMondayItemData(itemId) {
     const item = response.data.data?.items?.[0];
     if (!item) return null;
 
+    const boardColumns = (item.board?.columns || []).map((col) => ({
+        id: col.id,
+        title: String(col.title || '').trim(),
+        type: String(col.type || '').toLowerCase(),
+    }));
+
     return {
         name: item.name,
         boardId: item.board?.id || null,
         boardName: item.board?.name || null,
         group: item.group || null,
+        boardColumns,
         fileColumns: collectFilesByColumn(item),
     };
+}
+
+/**
+ * Finds a File column id from board column metadata already loaded with the item.
+ */
+function findFileColumnIdInBoardColumns(boardColumns, columnTitle) {
+    const wanted = String(columnTitle || '').trim().toLowerCase();
+    if (!wanted || !Array.isArray(boardColumns)) return null;
+    const match =
+        boardColumns.find(
+            (col) => col.title.toLowerCase() === wanted && col.type === 'file'
+        ) || boardColumns.find((col) => col.title.toLowerCase() === wanted);
+    return match?.id || null;
 }
 
 /**
@@ -473,6 +498,7 @@ module.exports = {
     updateMondayFolderLink,
     clearMondayFileColumn,
     findFileColumnIdByTitle,
+    findFileColumnIdInBoardColumns,
     addFileToMondayColumn,
     createMondayUpdate,
     addFileToMondayUpdate,

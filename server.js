@@ -34,7 +34,10 @@ const ARCHIVE_UPLOAD_COLUMN_TITLE = (
 // Optional overrides when title lookup fails (e.g. hidden column): boardId:columnId|...
 const ARCHIVE_UPLOAD_COLUMN_ID_BY_BOARD = (() => {
     const map = new Map();
-    const raw = process.env.ARCHIVE_UPLOAD_COLUMN_IDS || '';
+    // Built-in defaults for known boards (hidden Archives still has a stable id).
+    const defaults =
+        '5098160780:file_mm6ck5dd|18417022417:file_mm6ch6yd|18416811230:file_mm6d269y';
+    const raw = process.env.ARCHIVE_UPLOAD_COLUMN_IDS || defaults;
     for (const entry of raw.split('|')) {
         const trimmed = entry.trim();
         if (!trimmed) continue;
@@ -213,10 +216,22 @@ async function resolveColumnUploadFolder(columnTitle, columnFolder, { itemGroup,
     return nested;
 }
 
-async function resolveArchiveColumnId(boardId) {
+async function resolveArchiveColumnId(boardId, item = null) {
     const key = String(boardId);
     if (archiveColumnIdByBoard.has(key)) {
         return archiveColumnIdByBoard.get(key);
+    }
+
+    const fromItem = mondayService.findFileColumnIdInBoardColumns(
+        item?.boardColumns,
+        ARCHIVE_UPLOAD_COLUMN_TITLE
+    );
+    if (fromItem) {
+        archiveColumnIdByBoard.set(key, fromItem);
+        console.log(
+            `[Monday] Archives column from item board columns: "${fromItem}" (board ${key})`
+        );
+        return fromItem;
     }
 
     const configured =
@@ -236,6 +251,14 @@ async function resolveArchiveColumnId(boardId) {
     );
     if (columnId) {
         archiveColumnIdByBoard.set(key, columnId);
+    } else {
+        console.error(
+            `[Monday] Archives lookup failed for board ${key}. ` +
+                `boardColumns=${(item?.boardColumns || [])
+                    .filter((c) => c.type === 'file')
+                    .map((c) => `${c.title}:${c.id}`)
+                    .join(', ') || '(none)'}`
+        );
     }
     return columnId;
 }
@@ -391,7 +414,7 @@ async function runItemSync(event) {
             );
 
             if (isStagingUpload) {
-                const archiveColumnId = await resolveArchiveColumnId(boardId);
+                const archiveColumnId = await resolveArchiveColumnId(boardId, item);
                 if (!archiveColumnId) {
                     console.error(
                         `[Monday] Column "${ARCHIVE_UPLOAD_COLUMN_TITLE}" not found on board ${boardId}`
