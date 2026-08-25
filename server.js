@@ -31,13 +31,10 @@ const STAGING_UPLOAD_COLUMN_TITLES = new Set(
 const ARCHIVE_UPLOAD_COLUMN_TITLE = (
     process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archives'
 ).trim();
-// Optional overrides when title lookup fails (e.g. hidden column): boardId:columnId|...
+// Optional overrides: boardId:columnId|boardId:columnId
 const ARCHIVE_UPLOAD_COLUMN_ID_BY_BOARD = (() => {
     const map = new Map();
-    // Built-in defaults for known boards (hidden Archives still has a stable id).
-    const defaults =
-        '5098160780:file_mm6ck5dd|18417022417:file_mm6ch6yd|18416811230:file_mm6d269y';
-    const raw = process.env.ARCHIVE_UPLOAD_COLUMN_IDS || defaults;
+    const raw = process.env.ARCHIVE_UPLOAD_COLUMN_IDS || '';
     for (const entry of raw.split('|')) {
         const trimmed = entry.trim();
         if (!trimmed) continue;
