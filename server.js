@@ -31,6 +31,22 @@ const STAGING_UPLOAD_COLUMN_TITLES = new Set(
 const ARCHIVE_UPLOAD_COLUMN_TITLE = (
     process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archives'
 ).trim();
+// Optional overrides when title lookup fails (e.g. hidden column): boardId:columnId|...
+const ARCHIVE_UPLOAD_COLUMN_ID_BY_BOARD = (() => {
+    const map = new Map();
+    const raw = process.env.ARCHIVE_UPLOAD_COLUMN_IDS || '';
+    for (const entry of raw.split('|')) {
+        const trimmed = entry.trim();
+        if (!trimmed) continue;
+        const colon = trimmed.indexOf(':');
+        if (colon <= 0) continue;
+        const boardId = trimmed.slice(0, colon).trim();
+        const columnId = trimmed.slice(colon + 1).trim();
+        if (boardId && columnId) map.set(boardId, columnId);
+    }
+    return map;
+})();
+const ARCHIVE_UPLOAD_COLUMN_ID = (process.env.ARCHIVE_UPLOAD_COLUMN_ID || '').trim();
 // Stannp Files nesting by board (always, any group):
 //   MJ boards → Stannp Files/{STANNP_DL_FOLDER_NAME}
 //   Valerie boards → Stannp Files/{STANNP_FU_FOLDER_NAME}
@@ -202,6 +218,18 @@ async function resolveArchiveColumnId(boardId) {
     if (archiveColumnIdByBoard.has(key)) {
         return archiveColumnIdByBoard.get(key);
     }
+
+    const configured =
+        ARCHIVE_UPLOAD_COLUMN_ID_BY_BOARD.get(key) ||
+        (ARCHIVE_UPLOAD_COLUMN_ID || null);
+    if (configured) {
+        archiveColumnIdByBoard.set(key, configured);
+        console.log(
+            `[Monday] Using configured Archives column id "${configured}" for board ${key}`
+        );
+        return configured;
+    }
+
     const columnId = await mondayService.findFileColumnIdByTitle(
         boardId,
         ARCHIVE_UPLOAD_COLUMN_TITLE

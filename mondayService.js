@@ -270,12 +270,28 @@ async function clearMondayFileColumn(itemId, boardId, columnId) {
 
 /**
  * Resolves a File column id by title on a board (case-insensitive).
+ * Also searches hidden columns (API 2025-10 capabilities VISIBILITY).
  */
 async function findFileColumnIdByTitle(boardId, columnTitle) {
     const wanted = String(columnTitle || '').trim().toLowerCase();
     if (!boardId || !wanted) return null;
 
-    const query = `query {
+    const pickMatch = (columns) => {
+        const list = columns || [];
+        return (
+            list.find(
+                (col) =>
+                    String(col.title || '').trim().toLowerCase() === wanted &&
+                    String(col.type || '').toLowerCase() === 'file'
+            ) ||
+            list.find(
+                (col) => String(col.title || '').trim().toLowerCase() === wanted
+            ) ||
+            null
+        );
+    };
+
+    const queryVisible = `query {
         boards (ids: [${boardId}]) {
             columns {
                 id
@@ -285,17 +301,48 @@ async function findFileColumnIdByTitle(boardId, columnTitle) {
         }
     }`;
 
-    const response = await axios.post(MONDAY_API_URL, { query }, { headers: mondayHeaders() });
+    const response = await axios.post(
+        MONDAY_API_URL,
+        { query: queryVisible },
+        { headers: mondayHeaders() }
+    );
     if (response.data.errors?.length) {
         throw new Error(response.data.errors.map((e) => e.message).join('; '));
     }
 
-    const columns = response.data.data?.boards?.[0]?.columns || [];
-    const match = columns.find(
-        (col) =>
-            String(col.title || '').trim().toLowerCase() === wanted &&
-            String(col.type || '').toLowerCase() === 'file'
+    let match = pickMatch(response.data.data?.boards?.[0]?.columns);
+    if (match?.id) return match.id;
+
+    // Hidden columns: default columns query may omit them. Include VISIBILITY.
+    const queryIncludingHidden = `query {
+        boards (ids: [${boardId}]) {
+            columns(capabilities: [null, VISIBILITY]) {
+                id
+                title
+                type
+            }
+        }
+    }`;
+    const hiddenResponse = await axios.post(
+        MONDAY_API_URL,
+        { query: queryIncludingHidden },
+        {
+            headers: {
+                ...mondayHeaders(),
+                'API-Version': '2025-10',
+            },
+        }
     );
+    if (hiddenResponse.data.errors?.length) {
+        console.warn(
+            `[Monday] Hidden-column lookup failed: ${hiddenResponse.data.errors
+                .map((e) => e.message)
+                .join('; ')}`
+        );
+        return null;
+    }
+
+    match = pickMatch(hiddenResponse.data.data?.boards?.[0]?.columns);
     return match?.id || null;
 }
 
