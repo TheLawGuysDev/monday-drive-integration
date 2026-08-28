@@ -10,6 +10,7 @@ app.use(express.json());
 // --- CONSTANTS ---
 const LINK_COLUMN_ID = "link_mm0f3036";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
+// Deploy marker: 2026-08-27 — group exclusion (not Welcome Letter). Check startup log.
 // Boards that skip sync for items in excluded group(s); all other groups sync.
 const GROUP_EXCLUDE_GROUP_TITLES = new Set(
     (process.env.GROUP_EXCLUDE_GROUP_TITLES || '')
@@ -498,4 +499,6 @@ app.post('/webhook', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Project Organized: Port ${PORT}`));
+app.listen(PORT, () =>
+    console.log(`Project Organized: Port ${PORT} | build: group-exclusion-2026-08-27`)
+);
