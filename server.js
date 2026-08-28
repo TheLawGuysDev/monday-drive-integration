@@ -10,10 +10,14 @@ app.use(express.json());
 // --- CONSTANTS ---
 const LINK_COLUMN_ID = "link_mm0f3036";
 const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
-const SYNC_FROM_GROUP_TITLE =
-    process.env.SYNC_FROM_GROUP_TITLE ||
-    "UPDATE BG SHEET - Client Auto Emailed 'Welcome Letter'";
-// Only these boards enforce SYNC_FROM_GROUP_TITLE; all others sync from any group.
+// Boards that skip sync for items in excluded group(s); all other groups sync.
+const GROUP_EXCLUDE_GROUP_TITLES = new Set(
+    (process.env.GROUP_EXCLUDE_GROUP_TITLES || '')
+        .split('|')
+        .map((title) => mondayService.normalizeGroupTitle(title))
+        .filter(Boolean)
+);
+// Only these boards enforce GROUP_EXCLUDE_GROUP_TITLES; all others sync from any group.
 const GROUP_FILTER_BOARD_IDS = new Set(
     (process.env.GROUP_FILTER_BOARD_IDS || process.env.BOARD_ID || '')
         .split(',')
@@ -309,11 +313,9 @@ async function runItemSync(event) {
     const boardId = event.boardId || item.boardId;
 
     if (boardRequiresGroupFilter(boardId)) {
-        const boardGroups = await mondayService.getBoardGroups(boardId);
-        const groupCheck = mondayService.isItemInOrAfterGroup(
+        const groupCheck = mondayService.isItemAllowedByGroupExclusion(
             item.group,
-            boardGroups,
-            SYNC_FROM_GROUP_TITLE
+            GROUP_EXCLUDE_GROUP_TITLES
         );
 
         console.log(`[GroupCheck] ${JSON.stringify({
@@ -321,14 +323,13 @@ async function runItemSync(event) {
             itemBoardId: item.boardId,
             boardIdUsed: boardId,
             itemGroup: item.group,
-            syncFrom: SYNC_FROM_GROUP_TITLE,
-            boardGroupCount: boardGroups.length,
+            excludedGroups: [...GROUP_EXCLUDE_GROUP_TITLES],
             ...groupCheck,
         })}`);
 
         if (!groupCheck.allowed) {
             console.log(
-                `[Skip] Item ${event.pulseId} blocked by group filter (${groupCheck.reason})`
+                `[Skip] Item ${event.pulseId} blocked by group exclusion (${groupCheck.reason})`
             );
             return;
         }

@@ -191,7 +191,45 @@ async function getBoardGroups(boardId) {
 }
 
 /**
+ * True when the item is NOT in any of the excluded groups (by normalized title).
+ */
+function isItemAllowedByGroupExclusion(itemGroup, excludedGroupTitles) {
+    const excluded = excludedGroupTitles instanceof Set ? excludedGroupTitles : new Set();
+    if (!itemGroup?.title && !itemGroup?.id) {
+        return {
+            allowed: false,
+            reason: 'missing_group_data',
+            hasItemGroup: false,
+        };
+    }
+
+    if (excluded.size === 0) {
+        return {
+            allowed: true,
+            reason: 'no_exclusions_configured',
+            itemGroupTitle: itemGroup.title,
+        };
+    }
+
+    const itemTitleNorm = normalizeGroupTitle(itemGroup.title);
+    if (excluded.has(itemTitleNorm)) {
+        return {
+            allowed: false,
+            reason: 'item_in_excluded_group',
+            itemGroupTitle: itemGroup.title,
+        };
+    }
+
+    return {
+        allowed: true,
+        reason: 'ok',
+        itemGroupTitle: itemGroup.title,
+    };
+}
+
+/**
  * True when the item is in the target group or any group after it on the board.
+ * @deprecated Prefer isItemAllowedByGroupExclusion for new group rules.
  */
 function isItemInOrAfterGroup(itemGroup, boardGroups, targetGroupTitle) {
     if (!itemGroup?.id || !boardGroups?.length || !targetGroupTitle) {
@@ -494,6 +532,7 @@ module.exports = {
     getMondayItemData,
     getBoardGroups,
     isItemInOrAfterGroup,
+    isItemAllowedByGroupExclusion,
     normalizeGroupTitle,
     updateMondayFolderLink,
     clearMondayFileColumn,
