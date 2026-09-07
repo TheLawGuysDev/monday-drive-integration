@@ -265,16 +265,63 @@ async function resolveArchiveColumnId(boardId, item = null) {
     return columnId;
 }
 
+/** @type {Map<string, string>} boardId → Stannp Files column id */
+const stannpColumnIdByBoard = new Map();
+
+async function resolveStannpColumnId(boardId, item = null) {
+    const key = String(boardId);
+    if (stannpColumnIdByBoard.has(key)) {
+        return stannpColumnIdByBoard.get(key);
+    }
+
+    const fromItem = mondayService.findFileColumnIdInBoardColumns(
+        item?.boardColumns,
+        STANNP_FILES_COLUMN_TITLE
+    );
+    if (fromItem) {
+        stannpColumnIdByBoard.set(key, fromItem);
+        return fromItem;
+    }
+
+    const columnId = await mondayService.findFileColumnIdByTitle(
+        boardId,
+        STANNP_FILES_COLUMN_TITLE
+    );
+    if (columnId) {
+        stannpColumnIdByBoard.set(key, columnId);
+    }
+    return columnId;
+}
+
+async function resolveDebounceMs(event) {
+    if (
+        event.type === 'move_pulse_into_group' ||
+        event.type === 'move_pulse_into_board'
+    ) {
+        return 1000;
+    }
+
+    const boardId = event.boardId;
+    if (boardId && event.columnId) {
+        const stannpId = await resolveStannpColumnId(boardId);
+        if (stannpId && String(event.columnId) === String(stannpId)) {
+            const ms = Number(process.env.STANNP_DEBOUNCE_MS);
+            console.log(`[Sync] Stannp Files webhook — debounce ${Number.isFinite(ms) && ms >= 0 ? ms : 500}ms`);
+            return Number.isFinite(ms) && ms >= 0 ? ms : 500;
+        }
+    }
+
+    const defaultMs = Number(process.env.DEBOUNCE_MS);
+    return Number.isFinite(defaultMs) && defaultMs > 0 ? defaultMs : 6000;
+}
+
 /**
  * Monday often fires 2+ webhooks for one multi-file upload. Debounce per item so we
  * only sync once after the burst — avoids duplicate Drive files on first upload.
  */
-function scheduleItemSync(event) {
+async function scheduleItemSync(event) {
     const itemId = String(event.pulseId);
-    const delayMs =
-        event.type === 'move_pulse_into_group' || event.type === 'move_pulse_into_board'
-            ? 1000
-            : 6000;
+    const delayMs = await resolveDebounceMs(event);
 
     let state = debounceByItem.get(itemId);
     if (!state) {
@@ -367,10 +414,53 @@ async function runItemSync(event) {
         );
     }
 
-    const totalFiles = item.fileColumns.reduce((sum, col) => sum + col.files.length, 0);
-    console.log(`[Sync] ${totalFiles} file(s) across ${item.fileColumns.length} column folder(s)`);
+    const stannpColumnId = await resolveStannpColumnId(boardId, item);
+    const triggeredStannp =
+        stannpColumnId &&
+        event.columnId &&
+        String(event.columnId) === String(stannpColumnId);
 
-    for (const column of item.fileColumns) {
+    let fileColumnsToSync = [...item.fileColumns];
+
+    if (triggeredStannp) {
+        const stannpGroup = fileColumnsToSync.find((c) =>
+            isStannpFilesColumn(c.columnTitle)
+        );
+        const stannpEmpty = !stannpGroup || stannpGroup.files.length === 0;
+        if (stannpEmpty) {
+            const maxAgeMs = Number(process.env.STANNP_RECALL_MAX_AGE_MS) || 10 * 60 * 1000;
+            try {
+                const recovered = await mondayService.recoverStannpOrphanFiles(
+                    event.pulseId,
+                    { maxAgeMs }
+                );
+                if (recovered.length) {
+                    fileColumnsToSync = fileColumnsToSync.filter(
+                        (c) => !isStannpFilesColumn(c.columnTitle)
+                    );
+                    fileColumnsToSync.push({
+                        columnId: stannpColumnId,
+                        columnTitle: STANNP_FILES_COLUMN_TITLE,
+                        files: recovered,
+                    });
+                    console.log(
+                        `[Stannp] Column empty — recovered ${recovered.length} file(s) from item Files`
+                    );
+                } else {
+                    console.log(
+                        '[Stannp] Column empty — no recent orphan file(s) in item Files'
+                    );
+                }
+            } catch (err) {
+                console.error(`[Stannp] Recall from item Files failed: ${err.message}`);
+            }
+        }
+    }
+
+    const totalFiles = fileColumnsToSync.reduce((sum, col) => sum + col.files.length, 0);
+    console.log(`[Sync] ${totalFiles} file(s) across ${fileColumnsToSync.length} column folder(s)`);
+
+    for (const column of fileColumnsToSync) {
         // Monday archive only — already synced via CRM/LW Uploads; skip to avoid Drive dupes.
         if (isArchiveUploadColumn(column.columnTitle)) {
             console.log(`[Skip] "${column.columnTitle}" is Monday archive (not synced to Drive)`);
@@ -500,5 +590,5 @@ app.post('/webhook', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
-    console.log(`Project Organized: Port ${PORT} | build: group-exclusion-2026-08-27`)
+    console.log(`Project Organized: Port ${PORT} | build: stannp-recall-2026-08-31`)
 );
