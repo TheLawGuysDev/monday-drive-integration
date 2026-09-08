@@ -1,0 +1,17 @@
+node_modules
+.env
+.git
+*.mp4
+_video_review
+_video_review2
+_video_review3
+*.csv
+*.xlsx
+*.html
+service-account.json
+service-account.json.bk
+backfill-from-csv.js
+export-board-items.js
+tools
+*.md
+*.txt
