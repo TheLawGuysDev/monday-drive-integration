@@ -356,10 +356,41 @@ function boardRequiresGroupFilter(boardId) {
 }
 
 async function runItemSync(event) {
+    console.log(
+        `[Sync] START item=${event.pulseId} board=${event.boardId || '?'} ` +
+            `col=${event.columnId || '-'} type=${event.type}`
+    );
+
+    if (!PARENT_FOLDER_ID) {
+        console.error(
+            '[Critical Error] PARENT_FOLDER_ID is missing in Cloud Run env — cannot create Drive folders'
+        );
+        return;
+    }
+
     const item = await mondayService.getMondayItemData(event.pulseId);
-    if (!item) return;
+    if (!item) {
+        console.error(
+            `[Skip] Item ${event.pulseId} not found via Monday API ` +
+                `(wrong MONDAY_API_KEY for this board, or item deleted/inaccessible)`
+        );
+        return;
+    }
 
     const boardId = event.boardId || item.boardId;
+    console.log(
+        `[Sync] Item loaded name="${item.name}" boardId=${boardId} ` +
+            `boardName="${item.boardName || '?'}" group="${item.group?.title || '?'}" ` +
+            `fileColumns=${item.fileColumns.length} ` +
+            `files=${JSON.stringify(
+                item.fileColumns.map((c) => ({
+                    title: c.columnTitle,
+                    columnId: c.columnId,
+                    n: c.files.length,
+                    names: c.files.map((f) => f.name),
+                }))
+            )}`
+    );
 
     if (boardRequiresGroupFilter(boardId)) {
         const groupCheck = mondayService.isItemAllowedByGroupExclusion(
@@ -367,14 +398,17 @@ async function runItemSync(event) {
             GROUP_EXCLUDE_GROUP_TITLES
         );
 
-        console.log(`[GroupCheck] ${JSON.stringify({
-            eventBoardId: event.boardId,
-            itemBoardId: item.boardId,
-            boardIdUsed: boardId,
-            itemGroup: item.group,
-            excludedGroups: [...GROUP_EXCLUDE_GROUP_TITLES],
-            ...groupCheck,
-        })}`);
+        console.log(
+            `[GroupCheck] ${JSON.stringify({
+                eventBoardId: event.boardId,
+                itemBoardId: item.boardId,
+                boardIdUsed: boardId,
+                filterBoardIds: [...GROUP_FILTER_BOARD_IDS],
+                itemGroup: item.group,
+                excludedGroups: [...GROUP_EXCLUDE_GROUP_TITLES],
+                ...groupCheck,
+            })}`
+        );
 
         if (!groupCheck.allowed) {
             console.log(
@@ -386,7 +420,8 @@ async function runItemSync(event) {
         console.log(`[Group] OK — "${groupCheck.itemGroupTitle}"`);
     } else {
         console.log(
-            `[Group] Skipped filter for board ${boardId} (not in GROUP_FILTER_BOARD_IDS)`
+            `[Group] No filter for board ${boardId} ` +
+                `(GROUP_FILTER_BOARD_IDS=[${[...GROUP_FILTER_BOARD_IDS].join(',')}])`
         );
     }
 
@@ -394,25 +429,41 @@ async function runItemSync(event) {
         name: item.name,
         pulseId: event.pulseId,
     });
+    console.log(
+        `[Drive] Resolving client folder "${folderName}" under parent=${PARENT_FOLDER_ID}`
+    );
     const rootFolder = await googleService.findOrRenameClientFolder(
         folderName,
         event.pulseId,
         PARENT_FOLDER_ID
     );
     if (!rootFolder) {
-        console.error('[Critical Error] Could not create/find root folder');
+        console.error(
+            `[Critical Error] Could not create/find root folder "${folderName}" ` +
+                `under PARENT_FOLDER_ID=${PARENT_FOLDER_ID}`
+        );
         return;
     }
 
-    console.log(`[Drive] Folder: ${rootFolder.name || folderName}`);
+    console.log(
+        `[Drive] Folder OK: name="${rootFolder.name || folderName}" id=${rootFolder.id}`
+    );
 
     if (event.type === 'create_pulse' || event.columnId === LINK_COLUMN_ID) {
-        await mondayService.updateMondayFolderLink(
-            event.pulseId,
-            event.boardId,
-            LINK_COLUMN_ID,
-            rootFolder.webViewLink
+        console.log(
+            `[Monday] Updating folder link column ${LINK_COLUMN_ID} ` +
+                `(hardcoded — may not exist on every board)`
         );
+        try {
+            await mondayService.updateMondayFolderLink(
+                event.pulseId,
+                event.boardId,
+                LINK_COLUMN_ID,
+                rootFolder.webViewLink
+            );
+        } catch (err) {
+            console.error(`[Monday] Folder link update failed: ${err.message}`);
+        }
     }
 
     const stannpColumnId = await resolveStannpColumnId(boardId, item);
@@ -420,6 +471,10 @@ async function runItemSync(event) {
         stannpColumnId &&
         event.columnId &&
         String(event.columnId) === String(stannpColumnId);
+    console.log(
+        `[Sync] triggeredStannp=${Boolean(triggeredStannp)} ` +
+            `stannpColumnId=${stannpColumnId || 'null'} event.columnId=${event.columnId || '-'}`
+    );
 
     let fileColumnsToSync = [...item.fileColumns];
 
@@ -461,6 +516,15 @@ async function runItemSync(event) {
     const totalFiles = fileColumnsToSync.reduce((sum, col) => sum + col.files.length, 0);
     console.log(`[Sync] ${totalFiles} file(s) across ${fileColumnsToSync.length} column folder(s)`);
 
+    if (totalFiles === 0) {
+        console.log(
+            `[Sync] DONE item=${event.pulseId} — nothing to upload ` +
+                `(no files in File columns after load` +
+                `${triggeredStannp ? ' / Stannp recall' : ''})`
+        );
+        return;
+    }
+
     for (const column of fileColumnsToSync) {
         // Monday archive only — already synced via CRM/LW Uploads; skip to avoid Drive dupes.
         if (isArchiveUploadColumn(column.columnTitle)) {
@@ -495,13 +559,22 @@ async function runItemSync(event) {
         // Drive is append-only for every file column: create versions, never overwrite/delete.
         let archivedOk = true;
         for (const file of column.files) {
-            const fileBuffer = await mondayService.downloadMondayFileBuffer(file.url);
-            await googleService.syncFileToDrive(
-                file.name,
-                Readable.from(fileBuffer),
-                uploadFolder.id,
-                file.assetId
-            );
+            let fileBuffer;
+            try {
+                fileBuffer = await mondayService.downloadMondayFileBuffer(file.url);
+                await googleService.syncFileToDrive(
+                    file.name,
+                    Readable.from(fileBuffer),
+                    uploadFolder.id,
+                    file.assetId
+                );
+            } catch (err) {
+                console.error(
+                    `[Sync] Failed uploading "${file.name}" from "${column.columnTitle}": ${err.message}`
+                );
+                if (isStagingUpload) archivedOk = false;
+                continue;
+            }
 
             if (isStagingUpload) {
                 const archiveColumnId = await resolveArchiveColumnId(boardId, item);
@@ -546,6 +619,8 @@ async function runItemSync(event) {
             }
         }
     }
+
+    console.log(`[Sync] DONE item=${event.pulseId}`);
 }
 
 app.post('/webhook', async (req, res) => {
@@ -553,12 +628,17 @@ app.post('/webhook', async (req, res) => {
     const event = req.body.event;
     if (!event) return res.status(200).send({ message: 'No event' });
 
-    console.log(`[Webhook] ${event.type} | Col: ${event.columnId} | Item: ${event.pulseId}`);
+    console.log(
+        `[Webhook] ${event.type} | Col: ${event.columnId} | Item: ${event.pulseId} | ` +
+            `Board: ${event.boardId || '?'}`
+    );
 
     try {
         const triggerUser = await mondayService.getMondayUserById(event.userId);
         if (triggerUser) {
-            console.log('[Webhook] Triggered by (GraphQL users):', triggerUser);
+            console.log(
+                `[Webhook] Triggered by id=${triggerUser.id} name="${triggerUser.name}" email=${triggerUser.email || '-'}`
+            );
         } else {
             console.log('[Webhook] Trigger user not resolved (userId:', event.userId, ')');
         }
@@ -590,6 +670,13 @@ app.post('/webhook', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-    console.log(`Project Organized: Port ${PORT} | build: stannp-recall-2026-08-31`)
-);
+app.listen(PORT, () => {
+    console.log(`Project Organized: Port ${PORT} | build: sync-diagnostics-2026-09-15`);
+    console.log(
+        `[Config] PARENT_FOLDER_ID=${PARENT_FOLDER_ID ? 'set' : 'MISSING'} ` +
+            `GROUP_FILTER_BOARD_IDS=[${[...GROUP_FILTER_BOARD_IDS].join(',')}] ` +
+            `GROUP_EXCLUDE=[${[...GROUP_EXCLUDE_GROUP_TITLES].join(' | ')}] ` +
+            `STANNP_MAP_BOARDS=[${[...STANNP_BOARD_FOLDER_BY_NAME.keys()].join(',')}] ` +
+            `LINK_COLUMN_ID=${LINK_COLUMN_ID} (hardcoded)`
+    );
+});
