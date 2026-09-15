@@ -84,80 +84,6 @@ function normalizeGroupTitle(title) {
 }
 
 /**
- * Asset ids currently attached to any File column on the item.
- */
-function collectFileColumnAssetIds(columnValues) {
-    const ids = new Set();
-    for (const columnValue of columnValues || []) {
-        if (!Array.isArray(columnValue.files)) continue;
-        for (const file of columnValue.files) {
-            if (file.asset_id != null) ids.add(String(file.asset_id));
-        }
-    }
-    return ids;
-}
-
-/**
- * When Stannp Files column was cleared before sync, recover recent assets still on
- * the item but not linked to any File column (Monday "Files" gallery orphans).
- */
-async function recoverStannpOrphanFiles(itemId, { maxAgeMs = 10 * 60 * 1000 } = {}) {
-    const query = `query {
-        items (ids: [${itemId}]) {
-            assets {
-                id
-                name
-                url
-                public_url
-                created_at
-            }
-            column_values {
-                ... on FileValue {
-                    files {
-                        ... on FileAssetValue {
-                            asset_id
-                        }
-                    }
-                }
-            }
-        }
-    }`;
-
-    const response = await axios.post(MONDAY_API_URL, { query }, { headers: mondayHeaders() });
-    if (response.data.errors?.length) {
-        throw new Error(response.data.errors.map((e) => e.message).join('; '));
-    }
-
-    const item = response.data.data?.items?.[0];
-    if (!item) return [];
-
-    const inColumns = collectFileColumnAssetIds(item.column_values);
-    const cutoff = Date.now() - maxAgeMs;
-    const recovered = [];
-
-    for (const asset of item.assets || []) {
-        const assetId = asset.id != null ? String(asset.id) : null;
-        if (!assetId || inColumns.has(assetId)) continue;
-
-        const createdAt = asset.created_at ? Date.parse(asset.created_at) : NaN;
-        if (Number.isFinite(createdAt) && createdAt < cutoff) continue;
-
-        const url = asset.public_url || asset.url;
-        if (!asset.name || !url) continue;
-
-        recovered.push({
-            assetId,
-            name: asset.name,
-            url,
-            createdAt: Number.isFinite(createdAt) ? createdAt : 0,
-        });
-    }
-
-    recovered.sort((a, b) => b.createdAt - a.createdAt);
-    return recovered.map(({ assetId, name, url }) => ({ assetId, name, url }));
-}
-
-/**
  * Fetches item name, board, current group, and files grouped by File column.
  */
 async function getMondayItemData(itemId) {
@@ -603,7 +529,6 @@ async function getMondayUserById(userId) {
 }
 
 module.exports = {
-    recoverStannpOrphanFiles,
     getMondayItemData,
     getBoardGroups,
     isItemInOrAfterGroup,
