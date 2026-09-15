@@ -89,6 +89,7 @@ const STANNP_BOARD_FOLDER_BY_NAME = (() => {
             'MJ Board for Testing:DL',
             'Demand Letters - MJ:DL',
             'VALERIE TESTING BOARD:FU',
+            'Valerie Testing Board:FU',
             'Valerie - 100% NEW AUTOMATIONS:FU',
         ].join('|');
     for (const entry of raw.split('|')) {
