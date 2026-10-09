@@ -231,8 +231,46 @@ async function listFilesInFolder(folderId) {
     }
 }
 
+/**
+ * Moves a Drive folder into a new parent (removes previous parents).
+ * Contents stay inside the folder — only the parent changes.
+ */
+async function moveFolderToParent(folderId, newParentId) {
+    const meta = await drive.files.get({
+        fileId: folderId,
+        fields: 'id, name, parents',
+        supportsAllDrives: true,
+    });
+
+    const previousParents = (meta.data.parents || []).join(',');
+    if ((meta.data.parents || []).includes(newParentId)) {
+        return {
+            id: meta.data.id,
+            name: meta.data.name,
+            alreadyInParent: true,
+        };
+    }
+
+    const updated = await drive.files.update({
+        fileId: folderId,
+        addParents: newParentId,
+        removeParents: previousParents,
+        fields: 'id, name, parents, webViewLink',
+        supportsAllDrives: true,
+    });
+
+    return {
+        id: updated.data.id,
+        name: updated.data.name,
+        webViewLink: updated.data.webViewLink,
+        alreadyInParent: false,
+    };
+}
+
 module.exports = {
     findOrCreateFolder,
     findOrRenameClientFolder,
+    findFolderByPulseId,
+    moveFolderToParent,
     syncFileToDrive,
 };

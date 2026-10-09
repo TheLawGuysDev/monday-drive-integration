@@ -9,7 +9,11 @@ app.use(express.json());
 
 // --- CONSTANTS ---
 const LINK_COLUMN_ID = "link_mm0f3036";
-const PARENT_FOLDER_ID = process.env.PARENT_FOLDER_ID;
+// OPEN_CLIENTS (existing sync target). CLOSED_CLIENTS used by /close-client.
+const PARENT_FOLDER_ID =
+    process.env.PARENT_FOLDER_ID || process.env.OPEN_CLIENTS_FOLDER_ID;
+const OPEN_CLIENTS_FOLDER_ID = PARENT_FOLDER_ID;
+const CLOSED_CLIENTS_FOLDER_ID = process.env.CLOSED_CLIENTS_FOLDER_ID;
 // Deploy marker: 2026-08-27 — group exclusion (not Welcome Letter). Check startup log.
 // Boards that skip sync for items in excluded group(s); all other groups sync.
 const GROUP_EXCLUDE_GROUP_TITLES = new Set(
@@ -498,7 +502,103 @@ app.post('/webhook', async (req, res) => {
     res.status(200).send({ message: 'OK' });
 });
 
+/**
+ * Move client folder from OPEN_CLIENTS → CLOSED_CLIENTS.
+ *
+ * Body (any of):
+ *   { "pulseId": "123" }
+ *   { "itemId": "123" }
+ *   Monday webhook: { "event": { "pulseId": "123" }, "challenge"?: "..." }
+ *
+ * Looks up folder by pulseId under OPEN (name like "Client Name - pulseId"),
+ * then moves the whole folder into CLOSED.
+ */
+app.post('/close-client', async (req, res) => {
+    if (req.body?.challenge) return res.status(200).send(req.body);
+
+    const pulseId =
+        req.body?.pulseId ||
+        req.body?.itemId ||
+        req.body?.event?.pulseId ||
+        req.query?.pulseId ||
+        req.query?.itemId;
+
+    if (!pulseId) {
+        return res.status(400).json({
+            ok: false,
+            error: 'Missing pulseId (or itemId). Send { "pulseId": "..." }',
+        });
+    }
+
+    if (!OPEN_CLIENTS_FOLDER_ID || !CLOSED_CLIENTS_FOLDER_ID) {
+        console.error(
+            `[CloseClient] Missing folder env: OPEN=${Boolean(OPEN_CLIENTS_FOLDER_ID)} CLOSED=${Boolean(CLOSED_CLIENTS_FOLDER_ID)}`
+        );
+        return res.status(500).json({
+            ok: false,
+            error: 'Missing PARENT_FOLDER_ID/OPEN_CLIENTS_FOLDER_ID or CLOSED_CLIENTS_FOLDER_ID',
+        });
+    }
+
+    try {
+        console.log(`[CloseClient] START pulseId=${pulseId}`);
+
+        // Already closed? treat as success (idempotent).
+        const alreadyClosed = await googleService.findFolderByPulseId(
+            pulseId,
+            CLOSED_CLIENTS_FOLDER_ID
+        );
+        if (alreadyClosed) {
+            console.log(
+                `[CloseClient] Already in CLOSED: "${alreadyClosed.name}" (${alreadyClosed.id})`
+            );
+            return res.status(200).json({
+                ok: true,
+                status: 'already_closed',
+                folderId: alreadyClosed.id,
+                folderName: alreadyClosed.name,
+            });
+        }
+
+        const openFolder = await googleService.findFolderByPulseId(
+            pulseId,
+            OPEN_CLIENTS_FOLDER_ID
+        );
+        if (!openFolder) {
+            console.error(
+                `[CloseClient] Folder not found in OPEN for pulseId=${pulseId}`
+            );
+            return res.status(404).json({
+                ok: false,
+                error: `Client folder not found in OPEN_CLIENTS for pulseId=${pulseId}`,
+            });
+        }
+
+        const moved = await googleService.moveFolderToParent(
+            openFolder.id,
+            CLOSED_CLIENTS_FOLDER_ID
+        );
+        console.log(
+            `[CloseClient] Moved "${moved.name}" (${moved.id}) → CLOSED_CLIENTS`
+        );
+
+        return res.status(200).json({
+            ok: true,
+            status: moved.alreadyInParent ? 'already_closed' : 'moved',
+            folderId: moved.id,
+            folderName: moved.name,
+            webViewLink: moved.webViewLink || null,
+        });
+    } catch (err) {
+        console.error(`[CloseClient] ERROR: ${err.message}`);
+        return res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
-    console.log(`Project Organized: Port ${PORT} | build: group-exclusion-2026-08-27`)
+    console.log(
+        `Project Organized: Port ${PORT} | build: close-client-2026-10-09 | ` +
+            `OPEN=${OPEN_CLIENTS_FOLDER_ID ? 'set' : 'MISSING'} CLOSED=${CLOSED_CLIENTS_FOLDER_ID ? 'set' : 'MISSING'}`
+    )
 );
