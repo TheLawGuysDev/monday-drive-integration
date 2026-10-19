@@ -267,10 +267,105 @@ async function moveFolderToParent(folderId, newParentId) {
     };
 }
 
+/**
+ * Lists immediate child folders of a parent.
+ */
+async function listChildFolders(parentId) {
+    const response = await drive.files.list({
+        q: `mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
+        fields: 'files(id, name, webViewLink)',
+        pageSize: 200,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+    return response.data.files || [];
+}
+
+/**
+ * Ensures CLOSED / {year} / {Month} exist (e.g. 2026 / October).
+ * Month names are English (en-US).
+ *
+ * @param {string} parentId
+ * @param {Date|{ year: string|number, month: string }} [dateOrParts=new Date()]
+ *        Pass { year, month } from Monday "Closing Date"; otherwise uses now (America/Chicago).
+ */
+async function ensureYearMonthFolders(parentId, dateOrParts = new Date()) {
+    let yearName;
+    let monthName;
+
+    if (
+        dateOrParts &&
+        typeof dateOrParts === 'object' &&
+        !(dateOrParts instanceof Date) &&
+        dateOrParts.year != null &&
+        dateOrParts.month != null
+    ) {
+        yearName = String(dateOrParts.year);
+        monthName = String(dateOrParts.month);
+    } else {
+        const date = dateOrParts instanceof Date ? dateOrParts : new Date();
+        yearName = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/Chicago',
+            year: 'numeric',
+        }).format(date);
+        monthName = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/Chicago',
+            month: 'long',
+        }).format(date);
+    }
+
+    const yearFolder = await findOrCreateFolder(yearName, parentId);
+    if (!yearFolder) {
+        throw new Error(`Could not find/create year folder "${yearName}"`);
+    }
+    const monthFolder = await findOrCreateFolder(monthName, yearFolder.id);
+    if (!monthFolder) {
+        throw new Error(`Could not find/create month folder "${monthName}"`);
+    }
+
+    return {
+        year: yearName,
+        month: monthName,
+        yearFolder,
+        monthFolder,
+        path: `${yearName}/${monthName}`,
+    };
+}
+
+/**
+ * Finds a closed client folder under CLOSED root layout:
+ *   CLOSED / {year} / {Month} / Client - pulseId
+ * Also checks CLOSED root for legacy flat moves.
+ */
+async function findClosedClientFolder(pulseId, closedRootId) {
+    const atRoot = await findFolderByPulseId(pulseId, closedRootId);
+    if (atRoot) {
+        return { folder: atRoot, path: '' };
+    }
+
+    const yearFolders = await listChildFolders(closedRootId);
+    for (const yearFolder of yearFolders) {
+        const monthFolders = await listChildFolders(yearFolder.id);
+        for (const monthFolder of monthFolders) {
+            const found = await findFolderByPulseId(pulseId, monthFolder.id);
+            if (found) {
+                return {
+                    folder: found,
+                    path: `${yearFolder.name}/${monthFolder.name}`,
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
 module.exports = {
     findOrCreateFolder,
     findOrRenameClientFolder,
     findFolderByPulseId,
     moveFolderToParent,
+    ensureYearMonthFolders,
+    findClosedClientFolder,
     syncFileToDrive,
 };

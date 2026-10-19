@@ -141,14 +141,92 @@ async function getMondayItemData(itemId) {
         type: String(col.type || '').toLowerCase(),
     }));
 
+    const columnValues = (item.column_values || []).map((cv) => ({
+        id: cv.id,
+        text: cv.text ?? null,
+        value: cv.value ?? null,
+    }));
+
     return {
         name: item.name,
         boardId: item.board?.id || null,
         boardName: item.board?.name || null,
         group: item.group || null,
         boardColumns,
+        columnValues,
         fileColumns: collectFilesByColumn(item),
     };
+}
+
+const MONTH_NAMES_EN = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+];
+
+/**
+ * Parses a Monday date column into calendar year + English month folder names.
+ * Prefers value.date (YYYY-MM-DD); falls back to text when it looks like YYYY-MM-DD.
+ */
+function parseMondayDateToFolderParts(text, value) {
+    let ymd = null;
+
+    if (value) {
+        try {
+            const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+            const dateStr = parsed?.date != null ? String(parsed.date).trim() : '';
+            if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) ymd = dateStr;
+        } catch {
+            // ignore invalid JSON
+        }
+    }
+
+    if (!ymd && text) {
+        const trimmed = String(text).trim();
+        if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+            ymd = trimmed;
+        }
+    }
+
+    if (!ymd) return null;
+
+    const monthIndex = Number(ymd.slice(5, 7)) - 1;
+    if (monthIndex < 0 || monthIndex > 11) return null;
+
+    return {
+        year: ymd.slice(0, 4),
+        month: MONTH_NAMES_EN[monthIndex],
+        ymd,
+    };
+}
+
+/**
+ * Reads "Closing Date" from the item. Returns { year, month, ymd } or null
+ * when the column is missing/empty/unparseable (caller should use "now").
+ */
+function resolveClosingDateFolderParts(boardColumns, columnValues) {
+    const wanted = 'closing date';
+    const col = (boardColumns || []).find(
+        (c) => String(c.title || '').trim().toLowerCase() === wanted
+    );
+    if (!col) return null;
+
+    const cv = (columnValues || []).find((v) => v.id === col.id);
+    if (!cv || (cv.text == null && cv.value == null)) return null;
+    if (cv.text === '' && (cv.value === '' || cv.value == null || cv.value === '{}')) {
+        return null;
+    }
+
+    return parseMondayDateToFolderParts(cv.text, cv.value);
 }
 
 /**
@@ -545,4 +623,5 @@ module.exports = {
     downloadMondayFileBuffer,
     getMondayUserById,
     buildClientFolderName,
+    resolveClosingDateFolderParts,
 };

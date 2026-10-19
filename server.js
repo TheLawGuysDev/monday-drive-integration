@@ -503,15 +503,15 @@ app.post('/webhook', async (req, res) => {
 });
 
 /**
- * Move client folder from OPEN_CLIENTS → CLOSED_CLIENTS.
+ * Move client folder from OPEN_CLIENTS → CLOSED_CLIENTS/{year}/{Month}.
  *
  * Body (any of):
  *   { "pulseId": "123" }
  *   { "itemId": "123" }
  *   Monday webhook: { "event": { "pulseId": "123" }, "challenge"?: "..." }
  *
- * Looks up folder by pulseId under OPEN (name like "Client Name - pulseId"),
- * then moves the whole folder into CLOSED.
+ * Year/month come from Monday "Closing Date" when set; otherwise now (America/Chicago).
+ * Ensures CLOSED/2026/October (creates if missing), then moves the folder there.
  */
 app.post('/close-client', async (req, res) => {
     if (req.body?.challenge) return res.status(200).send(req.body);
@@ -543,20 +543,21 @@ app.post('/close-client', async (req, res) => {
     try {
         console.log(`[CloseClient] START pulseId=${pulseId}`);
 
-        // Already closed? treat as success (idempotent).
-        const alreadyClosed = await googleService.findFolderByPulseId(
+        // Already closed? treat as success (idempotent) — checks year/month tree + legacy root.
+        const alreadyClosed = await googleService.findClosedClientFolder(
             pulseId,
             CLOSED_CLIENTS_FOLDER_ID
         );
         if (alreadyClosed) {
             console.log(
-                `[CloseClient] Already in CLOSED: "${alreadyClosed.name}" (${alreadyClosed.id})`
+                `[CloseClient] Already in CLOSED${alreadyClosed.path ? `/${alreadyClosed.path}` : ''}: "${alreadyClosed.folder.name}" (${alreadyClosed.folder.id})`
             );
             return res.status(200).json({
                 ok: true,
                 status: 'already_closed',
-                folderId: alreadyClosed.id,
-                folderName: alreadyClosed.name,
+                folderId: alreadyClosed.folder.id,
+                folderName: alreadyClosed.folder.name,
+                closedPath: alreadyClosed.path || null,
             });
         }
 
@@ -574,12 +575,49 @@ app.post('/close-client', async (req, res) => {
             });
         }
 
+        let yearMonthParts = new Date();
+        let dateSource = 'now';
+        let closingYmd = null;
+
+        try {
+            const item = await mondayService.getMondayItemData(pulseId);
+            const closingParts = item
+                ? mondayService.resolveClosingDateFolderParts(
+                      item.boardColumns,
+                      item.columnValues
+                  )
+                : null;
+            if (closingParts) {
+                yearMonthParts = {
+                    year: closingParts.year,
+                    month: closingParts.month,
+                };
+                dateSource = 'closing_date';
+                closingYmd = closingParts.ymd;
+            }
+        } catch (err) {
+            console.warn(
+                `[CloseClient] Closing Date lookup failed (using now): ${err.message}`
+            );
+        }
+
+        console.log(
+            `[CloseClient] Year/month source=${dateSource}` +
+                (closingYmd ? ` ymd=${closingYmd}` : '')
+        );
+
+        const { monthFolder, path: closedPath } =
+            await googleService.ensureYearMonthFolders(
+                CLOSED_CLIENTS_FOLDER_ID,
+                yearMonthParts
+            );
+
         const moved = await googleService.moveFolderToParent(
             openFolder.id,
-            CLOSED_CLIENTS_FOLDER_ID
+            monthFolder.id
         );
         console.log(
-            `[CloseClient] Moved "${moved.name}" (${moved.id}) → CLOSED_CLIENTS`
+            `[CloseClient] Moved "${moved.name}" (${moved.id}) → CLOSED/${closedPath}`
         );
 
         return res.status(200).json({
@@ -587,6 +625,9 @@ app.post('/close-client', async (req, res) => {
             status: moved.alreadyInParent ? 'already_closed' : 'moved',
             folderId: moved.id,
             folderName: moved.name,
+            closedPath,
+            dateSource,
+            closingDate: closingYmd,
             webViewLink: moved.webViewLink || null,
         });
     } catch (err) {
@@ -598,7 +639,7 @@ app.post('/close-client', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
     console.log(
-        `Project Organized: Port ${PORT} | build: close-client-2026-10-09 | ` +
+        `Project Organized: Port ${PORT} | build: close-client-closing-date-2026-10-19 | ` +
             `OPEN=${OPEN_CLIENTS_FOLDER_ID ? 'set' : 'MISSING'} CLOSED=${CLOSED_CLIENTS_FOLDER_ID ? 'set' : 'MISSING'}`
     )
 );
