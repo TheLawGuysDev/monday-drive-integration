@@ -332,20 +332,85 @@ async function ensureYearMonthFolders(parentId, dateOrParts = new Date()) {
     };
 }
 
+const YEAR_FOLDER_RE = /^\d{4}$/;
+const MONTH_FOLDER_NAMES = new Set([
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+]);
+
+/**
+ * Finds an immediate child folder by exact name (does not create).
+ */
+async function findChildFolderByName(parentId, folderName) {
+    const response = await drive.files.list({
+        q: `name = '${String(folderName).replace(/'/g, "\\'")}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`,
+        fields: 'files(id, name, webViewLink)',
+        pageSize: 5,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+    });
+    return response.data.files?.[0] || null;
+}
+
 /**
  * Finds a closed client folder under CLOSED root layout:
  *   CLOSED / {year} / {Month} / Client - pulseId
  * Also checks CLOSED root for legacy flat moves.
+ *
+ * Important: only walks children named YYYY / English month — never descends
+ * into legacy client folders at CLOSED root (that caused multi-minute Drive scans).
+ *
+ * @param {string} pulseId
+ * @param {string} closedRootId
+ * @param {{ year?: string, month?: string } | null} [preferredPath]
  */
-async function findClosedClientFolder(pulseId, closedRootId) {
+async function findClosedClientFolder(pulseId, closedRootId, preferredPath = null) {
     const atRoot = await findFolderByPulseId(pulseId, closedRootId);
     if (atRoot) {
         return { folder: atRoot, path: '' };
     }
 
-    const yearFolders = await listChildFolders(closedRootId);
+    // Fast path: only the expected year/month (from Closing Date / now).
+    if (preferredPath?.year != null && preferredPath?.month != null) {
+        const yearFolder = await findChildFolderByName(
+            closedRootId,
+            String(preferredPath.year)
+        );
+        if (yearFolder) {
+            const monthFolder = await findChildFolderByName(
+                yearFolder.id,
+                String(preferredPath.month)
+            );
+            if (monthFolder) {
+                const found = await findFolderByPulseId(pulseId, monthFolder.id);
+                if (found) {
+                    return {
+                        folder: found,
+                        path: `${yearFolder.name}/${monthFolder.name}`,
+                    };
+                }
+            }
+        }
+    }
+
+    // Fallback: only real year/month folders (skip legacy client folders at root).
+    const yearFolders = (await listChildFolders(closedRootId)).filter((f) =>
+        YEAR_FOLDER_RE.test(f.name)
+    );
     for (const yearFolder of yearFolders) {
-        const monthFolders = await listChildFolders(yearFolder.id);
+        const monthFolders = (await listChildFolders(yearFolder.id)).filter((f) =>
+            MONTH_FOLDER_NAMES.has(f.name)
+        );
         for (const monthFolder of monthFolders) {
             const found = await findFolderByPulseId(pulseId, monthFolder.id);
             if (found) {

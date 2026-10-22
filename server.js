@@ -541,40 +541,10 @@ app.post('/close-client', async (req, res) => {
     }
 
     try {
+        const t0 = Date.now();
         console.log(`[CloseClient] START pulseId=${pulseId}`);
 
-        // Already closed? treat as success (idempotent) — checks year/month tree + legacy root.
-        const alreadyClosed = await googleService.findClosedClientFolder(
-            pulseId,
-            CLOSED_CLIENTS_FOLDER_ID
-        );
-        if (alreadyClosed) {
-            console.log(
-                `[CloseClient] Already in CLOSED${alreadyClosed.path ? `/${alreadyClosed.path}` : ''}: "${alreadyClosed.folder.name}" (${alreadyClosed.folder.id})`
-            );
-            return res.status(200).json({
-                ok: true,
-                status: 'already_closed',
-                folderId: alreadyClosed.folder.id,
-                folderName: alreadyClosed.folder.name,
-                closedPath: alreadyClosed.path || null,
-            });
-        }
-
-        const openFolder = await googleService.findFolderByPulseId(
-            pulseId,
-            OPEN_CLIENTS_FOLDER_ID
-        );
-        if (!openFolder) {
-            console.error(
-                `[CloseClient] Folder not found in OPEN for pulseId=${pulseId}`
-            );
-            return res.status(404).json({
-                ok: false,
-                error: `Client folder not found in OPEN_CLIENTS for pulseId=${pulseId}`,
-            });
-        }
-
+        // Resolve year/month first (also used to keep the CLOSED lookup cheap).
         let yearMonthParts = new Date();
         let dateSource = 'now';
         let closingYmd = null;
@@ -601,15 +571,70 @@ app.post('/close-client', async (req, res) => {
             );
         }
 
+        // Prefer calendar parts for the already-closed check (not a Date object).
+        const preferredPath =
+            yearMonthParts instanceof Date
+                ? (() => {
+                      const d = yearMonthParts;
+                      return {
+                          year: new Intl.DateTimeFormat('en-US', {
+                              timeZone: 'America/Chicago',
+                              year: 'numeric',
+                          }).format(d),
+                          month: new Intl.DateTimeFormat('en-US', {
+                              timeZone: 'America/Chicago',
+                              month: 'long',
+                          }).format(d),
+                      };
+                  })()
+                : yearMonthParts;
+
         console.log(
             `[CloseClient] Year/month source=${dateSource}` +
-                (closingYmd ? ` ymd=${closingYmd}` : '')
+                (closingYmd ? ` ymd=${closingYmd}` : '') +
+                ` path=${preferredPath.year}/${preferredPath.month}` +
+                ` (+${Date.now() - t0}ms)`
         );
+
+        // Already closed? Prefer preferred year/month; never scan legacy client folders.
+        const alreadyClosed = await googleService.findClosedClientFolder(
+            pulseId,
+            CLOSED_CLIENTS_FOLDER_ID,
+            preferredPath
+        );
+        if (alreadyClosed) {
+            console.log(
+                `[CloseClient] Already in CLOSED${alreadyClosed.path ? `/${alreadyClosed.path}` : ''}: "${alreadyClosed.folder.name}" (${alreadyClosed.folder.id}) (+${Date.now() - t0}ms)`
+            );
+            return res.status(200).json({
+                ok: true,
+                status: 'already_closed',
+                folderId: alreadyClosed.folder.id,
+                folderName: alreadyClosed.folder.name,
+                closedPath: alreadyClosed.path || null,
+                dateSource,
+                closingDate: closingYmd,
+            });
+        }
+
+        const openFolder = await googleService.findFolderByPulseId(
+            pulseId,
+            OPEN_CLIENTS_FOLDER_ID
+        );
+        if (!openFolder) {
+            console.error(
+                `[CloseClient] Folder not found in OPEN for pulseId=${pulseId} (+${Date.now() - t0}ms)`
+            );
+            return res.status(404).json({
+                ok: false,
+                error: `Client folder not found in OPEN_CLIENTS for pulseId=${pulseId}`,
+            });
+        }
 
         const { monthFolder, path: closedPath } =
             await googleService.ensureYearMonthFolders(
                 CLOSED_CLIENTS_FOLDER_ID,
-                yearMonthParts
+                preferredPath
             );
 
         const moved = await googleService.moveFolderToParent(
@@ -617,7 +642,7 @@ app.post('/close-client', async (req, res) => {
             monthFolder.id
         );
         console.log(
-            `[CloseClient] Moved "${moved.name}" (${moved.id}) → CLOSED/${closedPath}`
+            `[CloseClient] Moved "${moved.name}" (${moved.id}) → CLOSED/${closedPath} (+${Date.now() - t0}ms)`
         );
 
         return res.status(200).json({
@@ -639,7 +664,7 @@ app.post('/close-client', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
     console.log(
-        `Project Organized: Port ${PORT} | build: close-client-closing-date-2026-10-19 | ` +
+        `Project Organized: Port ${PORT} | build: close-client-fast-lookup-2026-10-21 | ` +
             `OPEN=${OPEN_CLIENTS_FOLDER_ID ? 'set' : 'MISSING'} CLOSED=${CLOSED_CLIENTS_FOLDER_ID ? 'set' : 'MISSING'}`
     )
 );

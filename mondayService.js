@@ -209,14 +209,20 @@ function parseMondayDateToFolderParts(text, value) {
     };
 }
 
+/** Accepted Monday column titles for the close date (case-insensitive). */
+const CLOSING_DATE_COLUMN_TITLES = new Set([
+    'closing date',
+    'date closed',
+    'closed date',
+]);
+
 /**
- * Reads "Closing Date" from the item. Returns { year, month, ymd } or null
- * when the column is missing/empty/unparseable (caller should use "now").
+ * Reads Closing Date / DATE CLOSED from the item.
+ * Returns { year, month, ymd } or null when missing/empty/unparseable.
  */
 function resolveClosingDateFolderParts(boardColumns, columnValues) {
-    const wanted = 'closing date';
-    const col = (boardColumns || []).find(
-        (c) => String(c.title || '').trim().toLowerCase() === wanted
+    const col = (boardColumns || []).find((c) =>
+        CLOSING_DATE_COLUMN_TITLES.has(String(c.title || '').trim().toLowerCase())
     );
     if (!col) return null;
 
