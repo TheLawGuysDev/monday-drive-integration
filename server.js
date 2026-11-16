@@ -40,6 +40,13 @@ const STAGING_UPLOAD_COLUMN_TITLES = new Set(
 const ARCHIVE_UPLOAD_COLUMN_TITLE = (
     process.env.ARCHIVE_UPLOAD_COLUMN_TITLE || 'Archives'
 ).trim();
+// File columns that must never sync to Drive (e.g. BG Sheet).
+const SKIP_DRIVE_SYNC_COLUMN_TITLES = new Set(
+    (process.env.SKIP_DRIVE_SYNC_COLUMNS || 'BG Sheet')
+        .split(',')
+        .map((title) => title.trim().toLowerCase())
+        .filter(Boolean)
+);
 // Optional overrides: boardId:columnId|boardId:columnId
 const ARCHIVE_UPLOAD_COLUMN_ID_BY_BOARD = (() => {
     const map = new Map();
@@ -152,6 +159,12 @@ function isArchiveUploadColumn(columnTitle) {
     return (
         String(columnTitle || '').trim().toLowerCase() ===
         ARCHIVE_UPLOAD_COLUMN_TITLE.toLowerCase()
+    );
+}
+
+function isSkipDriveSyncColumn(columnTitle) {
+    return SKIP_DRIVE_SYNC_COLUMN_TITLES.has(
+        String(columnTitle || '').trim().toLowerCase()
     );
 }
 
@@ -378,6 +391,10 @@ async function runItemSync(event) {
         // Monday archive only — already synced via CRM/LW Uploads; skip to avoid Drive dupes.
         if (isArchiveUploadColumn(column.columnTitle)) {
             console.log(`[Skip] "${column.columnTitle}" is Monday archive (not synced to Drive)`);
+            continue;
+        }
+        if (isSkipDriveSyncColumn(column.columnTitle)) {
+            console.log(`[Skip] "${column.columnTitle}" excluded from Drive sync`);
             continue;
         }
 
